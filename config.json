@@ -1,0 +1,7 @@
+{
+    "model": "small",
+    "language": "es",
+    "hotkey": "cmd+shift+space",
+    "auto_paste": true,
+    "model_path": "models/ggml-small.bin"
+}
