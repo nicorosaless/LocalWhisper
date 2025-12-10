@@ -1,6 +1,7 @@
 import Cocoa
 import Carbon.HIToolbox
 import AVFoundation
+import SwiftUI
 
 // MARK: - AppDelegate
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -9,93 +10,264 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var isRecording = false
     var tempAudioURL: URL?
     
+    // UI Components
+    var floatingIndicator: FloatingIndicatorWindow!
+    var settingsWindowController: SettingsWindowController?
+    var onboardingController: OnboardingWindowController?
+    
     // Hotkey monitor
-    var eventMonitor: Any?
+    var flagsMonitor: Any?
+    var keyDownMonitor: Any?
+    var keyUpMonitor: Any?
     var pressedModifiers: NSEvent.ModifierFlags = []
-    var spacePressed = false
+    var hotkeyKeyPressed = false
+    
+    // Audio level timer
+    var audioLevelTimer: Timer?
     
     // Config
-    let modelPath: String
-    let language: String
+    var config: AppConfig = .defaultConfig
+    let appDir: String
     
     override init() {
         // Get the base directory (parent of swift/)
         let currentPath = FileManager.default.currentDirectoryPath
-        let appDir: String
         if currentPath.hasSuffix("/swift") {
             appDir = (currentPath as NSString).deletingLastPathComponent
         } else {
             appDir = currentPath
         }
         
+        super.init()
+        loadConfig()
+    }
+    
+    func loadConfig() {
         let configPath = "\(appDir)/config.json"
         
-        if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let modelName = json["model_path"] as? String ?? "models/ggml-small.bin"
-            self.modelPath = "\(appDir)/\(modelName)"
-            self.language = json["language"] as? String ?? "es"
-        } else {
-            self.modelPath = "\(appDir)/models/ggml-small.bin"
-            self.language = "es"
+        if let data = FileManager.default.contents(atPath: configPath) {
+            do {
+                config = try JSONDecoder().decode(AppConfig.self, from: data)
+            } catch {
+                // Try legacy format
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    config.language = json["language"] as? String ?? "es"
+                    config.modelPath = json["model_path"] as? String ?? "models/ggml-small.bin"
+                    config.autoPaste = json["auto_paste"] as? Bool ?? true
+                    
+                    if let hotkeyMode = json["hotkey_mode"] as? String {
+                        config.hotkeyMode = HotkeyMode(rawValue: hotkeyMode) ?? .pushToTalk
+                    }
+                }
+            }
         }
         
-        print("Modelo: \(modelPath)")
+        print("Config loaded: language=\(config.language), mode=\(config.hotkeyMode)")
+    }
+    
+    func saveConfig() {
+        let configPath = "\(appDir)/config.json"
         
-        super.init()
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(config)
+            try data.write(to: URL(fileURLWithPath: configPath))
+            print("Config saved")
+        } catch {
+            print("Error saving config: \(error)")
+        }
+    }
+    
+    var modelPath: String {
+        let path = config.modelPath
+        if path.hasPrefix("/") {
+            return path
+        }
+        return "\(appDir)/\(path)"
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Check if onboarding is complete
+        let onboardingComplete = UserDefaults.standard.bool(forKey: "onboardingComplete")
+        
+        if !onboardingComplete {
+            showOnboarding()
+            return
+        }
+        
+        startApp()
+    }
+    
+    func showOnboarding() {
+        onboardingController = OnboardingWindowController()
+        onboardingController?.onComplete = { [weak self] in
+            // Delay to allow window to close properly
+            DispatchQueue.main.async {
+                self?.onboardingController = nil
+                self?.startApp()
+            }
+        }
+        
+        // Create bindings with explicit capture
+        let hotkeyBinding = Binding<HotkeyConfig>(
+            get: { [weak self] in self?.config.hotkey ?? .defaultConfig },
+            set: { [weak self] in self?.config.hotkey = $0 }
+        )
+        let modeBinding = Binding<HotkeyMode>(
+            get: { [weak self] in self?.config.hotkeyMode ?? .pushToTalk },
+            set: { [weak self] in self?.config.hotkeyMode = $0 }
+        )
+        
+        onboardingController?.show(hotkeyConfig: hotkeyBinding, hotkeyMode: modeBinding)
+    }
+    
+    func startApp() {
+        // Update model path to use downloaded model
+        if ModelDownloader.shared.isModelDownloaded() {
+            config.modelPath = ModelDownloader.shared.getModelPath()
+        }
+        
+        // Load language from UserDefaults
+        if let lang = UserDefaults.standard.string(forKey: "language") {
+            config.language = lang
+        }
+        
+        saveConfig()
+        
+        // Create floating indicator
+        floatingIndicator = FloatingIndicatorWindow()
+        floatingIndicator.hotkeyDisplayString = config.hotkey.displayString
+        floatingIndicator.orderFront(nil)
+        
         // Create status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🎤"
         
         // Create menu
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Estado: Listo", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Modelo: small", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Hotkey: ⌘⇧Space (mantener)", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Salir", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
+        updateMenu()
         
         // Setup global hotkey monitor
         setupHotkeyMonitor()
         
-        print("WhisperMac Swift iniciado. Mantén Cmd+Shift+Space para dictar.")
+        print("WhisperMac Swift iniciado.")
+        print("Modelo: \(modelPath)")
+        print("Hotkey: \(config.hotkey.displayString) (\(config.hotkeyMode.displayName))")
+    }
+    
+    func updateMenu() {
+        let menu = NSMenu()
+        
+        let statusMenuItem = NSMenuItem(title: "Estado: Listo", action: nil, keyEquivalent: "")
+        statusMenuItem.tag = 100
+        menu.addItem(statusMenuItem)
+        menu.addItem(NSMenuItem.separator())
+        
+        menu.addItem(NSMenuItem(title: "Idioma: \(config.language)", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Hotkey: \(config.hotkey.displayString)", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Modo: \(config.hotkeyMode.displayName)", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        
+        let prefsItem = NSMenuItem(title: "Preferencias...", action: #selector(openSettings), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        let quitItem = NSMenuItem(title: "Salir", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        
+        statusItem.menu = menu
+    }
+    
+    func updateStatusMenuItem(_ text: String) {
+        if let item = statusItem.menu?.item(withTag: 100) {
+            item.title = "Estado: \(text)"
+        }
+    }
+    
+    @objc func openSettings() {
+        settingsWindowController = SettingsWindowController(config: config) { [weak self] newConfig in
+            self?.config = newConfig
+            self?.saveConfig()
+            self?.updateMenu()
+            self?.floatingIndicator.hotkeyDisplayString = newConfig.hotkey.displayString
+            self?.setupHotkeyMonitor() // Re-setup with new hotkey
+        }
+        settingsWindowController?.show()
     }
     
     func setupHotkeyMonitor() {
-        // Monitor key down
-        NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.pressedModifiers = event.modifierFlags.intersection([.command, .shift])
+        // Remove existing monitors
+        if let monitor = flagsMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = keyDownMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = keyUpMonitor { NSEvent.removeMonitor(monitor) }
+        
+        // Monitor modifier flags
+        flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
             self?.checkHotkey()
         }
         
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 49 { // Space
-                self?.spacePressed = true
-                self?.checkHotkey()
+        // Monitor key down
+        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return }
+            if event.keyCode == self.config.hotkey.keyCode {
+                self.hotkeyKeyPressed = true
+                self.checkHotkey()
             }
         }
         
-        NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            if event.keyCode == 49 { // Space
-                self?.spacePressed = false
-                if self?.isRecording == true {
-                    self?.stopRecording()
+        // Monitor key up
+        keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            guard let self = self else { return }
+            if event.keyCode == self.config.hotkey.keyCode {
+                self.hotkeyKeyPressed = false
+                
+                // For push-to-talk mode, stop recording on key release
+                if self.config.hotkeyMode == .pushToTalk && self.isRecording {
+                    self.stopRecording()
                 }
             }
         }
     }
     
     func checkHotkey() {
-        let cmdShiftPressed = pressedModifiers.contains([.command, .shift])
+        let modifiersMatch = checkModifiersMatch()
         
-        if cmdShiftPressed && spacePressed && !isRecording {
-            startRecording()
+        if modifiersMatch && hotkeyKeyPressed {
+            switch config.hotkeyMode {
+            case .pushToTalk:
+                if !isRecording {
+                    startRecording()
+                }
+            case .toggle:
+                if isRecording {
+                    stopRecording()
+                } else {
+                    startRecording()
+                }
+                // Reset to prevent multiple toggles from held key
+                hotkeyKeyPressed = false
+            }
         }
+    }
+    
+    func checkModifiersMatch() -> Bool {
+        let mods = config.hotkey.modifiers
+        let needCmd = mods.contains("cmd")
+        let needShift = mods.contains("shift")
+        let needAlt = mods.contains("alt")
+        let needCtrl = mods.contains("ctrl")
+        
+        let hasCmd = pressedModifiers.contains(.command)
+        let hasShift = pressedModifiers.contains(.shift)
+        let hasAlt = pressedModifiers.contains(.option)
+        let hasCtrl = pressedModifiers.contains(.control)
+        
+        return (needCmd == hasCmd) && (needShift == hasShift) && 
+               (needAlt == hasAlt) && (needCtrl == hasCtrl)
     }
     
     func startRecording() {
@@ -104,7 +276,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         DispatchQueue.main.async {
             self.statusItem.button?.title = "🔴"
-            self.statusItem.menu?.item(at: 0)?.title = "Estado: Grabando..."
+            self.updateStatusMenuItem("Grabando...")
+            self.floatingIndicator.setState(.recording)
         }
         
         // Create temp file for recording
@@ -123,25 +296,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         do {
             audioRecorder = try AVAudioRecorder(url: tempAudioURL!, settings: settings)
+            audioRecorder?.isMeteringEnabled = true
             audioRecorder?.record()
+            
+            // Start audio level monitoring
+            startAudioLevelMonitoring()
+            
             print("Grabando...")
         } catch {
             print("Error al grabar: \(error)")
             isRecording = false
             statusItem.button?.title = "🎤"
+            floatingIndicator.setState(.idle)
         }
+    }
+    
+    func startAudioLevelMonitoring() {
+        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
+            guard let self = self, let recorder = self.audioRecorder, recorder.isRecording else { return }
+            
+            recorder.updateMeters()
+            let power = recorder.averagePower(forChannel: 0)
+            // Convert dB to 0-1 range (dB typically ranges from -160 to 0)
+            let normalizedLevel = max(0, (power + 50) / 50)
+            self.floatingIndicator.updateAudioLevel(normalizedLevel)
+        }
+    }
+    
+    func stopAudioLevelMonitoring() {
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
     }
     
     func stopRecording() {
         guard isRecording else { return }
         isRecording = false
         
+        stopAudioLevelMonitoring()
         audioRecorder?.stop()
         audioRecorder = nil
         
         DispatchQueue.main.async {
             self.statusItem.button?.title = "⏳"
-            self.statusItem.menu?.item(at: 0)?.title = "Estado: Transcribiendo..."
+            self.updateStatusMenuItem("Transcribiendo...")
+            self.floatingIndicator.setState(.transcribing)
         }
         
         print("Grabación terminada.")
@@ -162,7 +360,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "-t", "8",      // Threads
                 "-bs", "2",     // Beam size
                 "-bo", "2",     // Best of
-                "-l", language
+                "-l", config.language
             ]
             
             print("Ejecutando: \(cmd.joined(separator: " "))")
@@ -193,13 +391,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(text, forType: .string)
                         
-                        // Simulate Cmd+V paste
-                        self.simulatePaste()
+                        // Auto-paste if enabled
+                        if self.config.autoPaste {
+                            self.simulatePaste()
+                        }
                         
-                        self.statusItem.menu?.item(at: 0)?.title = "Estado: Listo"
+                        self.updateStatusMenuItem("Listo")
+                        self.floatingIndicator.setState(.idle)
                     } else {
                         print("No se detectó texto")
-                        self.statusItem.menu?.item(at: 0)?.title = "Estado: Sin texto"
+                        self.updateStatusMenuItem("Sin texto")
+                        self.floatingIndicator.setState(.idle)
                     }
                     
                     self.statusItem.button?.title = "🎤"
@@ -212,7 +414,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 print("Error en transcripción: \(error)")
                 DispatchQueue.main.async {
                     self.statusItem.button?.title = "❌"
-                    self.statusItem.menu?.item(at: 0)?.title = "Estado: Error"
+                    self.updateStatusMenuItem("Error")
+                    self.floatingIndicator.setState(.idle)
                 }
             }
         }

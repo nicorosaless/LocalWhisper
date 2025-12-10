@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.env
+
+# Swift build artifacts
+swift/.build/
+swift/.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+
+# Models (large files - download separately)
+models/*.bin
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Temp files
+*.wav
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
