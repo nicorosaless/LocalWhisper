@@ -29,11 +29,15 @@ struct OnboardingView: View {
     
     var body: some View {
         VStack(spacing: 0) {
+            // Header for window dragging
+            Color.white
+                .frame(height: 1)
+                .edgesIgnoringSafeArea(.top)
             // Progress indicator
             HStack(spacing: 8) {
                 ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
                     Circle()
-                        .fill(step.rawValue <= currentStep.rawValue ? Color.accentColor : Color.gray.opacity(0.3))
+                        .fill(step.rawValue <= currentStep.rawValue ? Color.black : Color.gray.opacity(0.3))
                         .frame(width: 8, height: 8)
                 }
             }
@@ -93,8 +97,11 @@ struct OnboardingView: View {
             .padding(20)
         }
         .frame(width: 450, height: 400)
+        .background(Color.white)
+        .foregroundColor(.black)
         .onAppear {
             checkPermissions()
+            startPermissionPolling()
         }
     }
     
@@ -112,7 +119,7 @@ struct OnboardingView: View {
     private var canAdvance: Bool {
         switch currentStep {
         case .permissions:
-            return microphoneGranted
+            return microphoneGranted && accessibilityGranted
         case .modelDownload:
             return downloadComplete || !isDownloading
         default:
@@ -136,14 +143,15 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             Image(systemName: "lock.shield")
                 .font(.system(size: 48))
-                .foregroundColor(.accentColor)
+                .foregroundColor(.black)
             
             Text("Permisos necesarios")
                 .font(.title2.bold())
+                .foregroundColor(.black)
             
             Text("WhisperMac necesita acceso al micrófono para transcribir tu voz.")
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.black.opacity(0.7))
                 .padding(.horizontal)
             
             VStack(alignment: .leading, spacing: 12) {
@@ -151,6 +159,7 @@ struct OnboardingView: View {
                     Image(systemName: microphoneGranted ? "checkmark.circle.fill" : "mic.circle")
                         .foregroundColor(microphoneGranted ? .green : .orange)
                     Text("Micrófono")
+                        .foregroundColor(.black)
                     Spacer()
                     if !microphoneGranted {
                         Button("Permitir") {
@@ -164,12 +173,22 @@ struct OnboardingView: View {
                     Image(systemName: accessibilityGranted ? "checkmark.circle.fill" : "accessibility.badge.arrow.up.right")
                         .foregroundColor(accessibilityGranted ? .green : .orange)
                     Text("Accesibilidad")
+                        .foregroundColor(.black)
                     Spacer()
                     if !accessibilityGranted {
-                        Button("Abrir ajustes") {
-                            openAccessibilitySettings()
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Button("Abrir ajustes") {
+                                openAccessibilitySettings()
+                            }
+                            .buttonStyle(.bordered)
+                            
+                            Button("Saltar (No recomendado)") {
+                                accessibilityGranted = true // Bypass
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10))
+                            .foregroundColor(.gray)
                         }
-                        .buttonStyle(.bordered)
                     }
                 }
             }
@@ -177,6 +196,15 @@ struct OnboardingView: View {
             .background(Color.gray.opacity(0.1))
             .cornerRadius(10)
             .padding(.horizontal)
+            
+            if !microphoneGranted || !accessibilityGranted {
+                Button(action: { checkPermissions() }) {
+                    Label("Verificar de nuevo", systemImage: "arrow.clockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.blue)
+            }
         }
     }
     
@@ -185,14 +213,14 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             Image(systemName: "globe")
                 .font(.system(size: 48))
-                .foregroundColor(.accentColor)
+                .foregroundColor(.black)
             
             Text("Selecciona tu idioma")
                 .font(.title2.bold())
             
             Text("WhisperMac transcribirá en el idioma seleccionado.")
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.black.opacity(0.7))
             
             VStack(spacing: 12) {
                 languageButton(code: "es", name: "Español", flag: "🇪🇸")
@@ -209,14 +237,15 @@ struct OnboardingView: View {
                     .font(.title)
                 Text(name)
                     .font(.headline)
+                    .foregroundColor(.black)
                 Spacer()
                 if selectedLanguage == code {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(.black)
                 }
             }
             .padding()
-            .background(selectedLanguage == code ? Color.accentColor.opacity(0.1) : Color.gray.opacity(0.1))
+            .background(selectedLanguage == code ? Color.black.opacity(0.1) : Color.gray.opacity(0.1))
             .cornerRadius(10)
         }
         .buttonStyle(.plain)
@@ -227,14 +256,14 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 48))
-                .foregroundColor(.accentColor)
+                .foregroundColor(.black)
             
             Text("Descargar modelo")
                 .font(.title2.bold())
             
             Text("Se descargará el modelo de voz (465 MB).")
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.black.opacity(0.7))
             
             if isDownloading {
                 VStack(spacing: 8) {
@@ -244,7 +273,7 @@ struct OnboardingView: View {
                     
                     Text("\(Int(downloadProgress * 100))%")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.black.opacity(0.7))
                 }
             } else if downloadComplete {
                 HStack {
@@ -262,14 +291,14 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             Image(systemName: "keyboard")
                 .font(.system(size: 48))
-                .foregroundColor(.accentColor)
+                .foregroundColor(.black)
             
             Text("Configura tu atajo")
                 .font(.title2.bold())
             
             Text("Este atajo activará la transcripción de voz.")
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.black.opacity(0.7))
             
             VStack(spacing: 16) {
                 HotkeyRecorderView(hotkey: $hotkeyConfig, isRecording: $isRecordingHotkey)
@@ -298,40 +327,48 @@ struct OnboardingView: View {
             
             Text("Pulsa \(hotkeyConfig.displayString) para empezar a transcribir.")
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.black.opacity(0.7))
         }
     }
     
     // MARK: - Helpers
     private func checkPermissions() {
         // Check microphone
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            microphoneGranted = true
-        default:
-            microphoneGranted = false
-        }
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         
-        // Check accessibility (simplified check)
-        accessibilityGranted = AXIsProcessTrusted()
-    }
-    
-    private func requestMicrophoneAccess() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            DispatchQueue.main.async {
-                microphoneGranted = granted
+        // Check accessibility
+        let accStatus = AXIsProcessTrusted()
+        
+        DispatchQueue.main.async {
+            self.microphoneGranted = (micStatus == .authorized)
+            self.accessibilityGranted = accStatus
+            
+            // If we are in permissions step and just got everything, auto-advance or at least enable button
+            if self.currentStep == .permissions && self.microphoneGranted && self.accessibilityGranted {
+                print("✅ Permissions granted, enabling Continue button")
             }
         }
     }
     
+    private func requestMicrophoneAccess() {
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            self.checkPermissions()
+        }
+    }
+    
+    @State private var pollingTimer: Timer?
+
+    private func startPermissionPolling() {
+        pollingTimer?.invalidate()
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            checkPermissions()
+        }
+    }
+
     private func openAccessibilitySettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)
-        
-        // Check again after a delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            checkPermissions()
-        }
+        // Polling is already running from onAppear
     }
     
     private func startDownload() {
@@ -352,8 +389,13 @@ struct OnboardingView: View {
     }
     
     private func saveSettings() {
+        print("🎧 ONBOARDING: Saving settings - hotkey: \(hotkeyConfig.displayString), mode: \(hotkeyMode), lang: \(selectedLanguage)")
         UserDefaults.standard.set(selectedLanguage, forKey: "language")
         UserDefaults.standard.set(true, forKey: "onboardingComplete")
+        
+        // Save version to prevent repeated onboarding on same version
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        UserDefaults.standard.set(currentVersion, forKey: "lastRunVersion")
     }
 }
 
@@ -378,10 +420,14 @@ class OnboardingWindowController {
         
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 450, height: 400),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        
+        window?.titlebarAppearsTransparent = true
+        window?.titleVisibility = .hidden
+        window?.backgroundColor = .white
         
         window?.title = "WhisperMac"
         window?.contentView = hostingView

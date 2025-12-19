@@ -3,6 +3,24 @@ import Carbon.HIToolbox
 import AVFoundation
 import SwiftUI
 
+func logDebug(_ message: String) {
+    let timestamp = Date().description
+    let logMessage = "[\(timestamp)] \(message)\n"
+    print(message)
+    let logURL = URL(fileURLWithPath: "/tmp/whisper_mac_startup.log")
+    if let data = logMessage.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: logURL.path) {
+            if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+                fileHandle.seekToEndOfFile()
+                fileHandle.write(data)
+                fileHandle.closeFile()
+            }
+        } else {
+            try? data.write(to: logURL)
+        }
+    }
+}
+
 // MARK: - AppDelegate
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -19,8 +37,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var flagsMonitor: Any?
     var keyDownMonitor: Any?
     var keyUpMonitor: Any?
+    var localKeyDownMonitor: Any?
+    var localKeyUpMonitor: Any?
     var pressedModifiers: NSEvent.ModifierFlags = []
     var hotkeyKeyPressed = false
+    var isHotkeyDown = false // Tracks if the physical key is currently pressed
     
     // Audio level timer
     var audioLevelTimer: Timer?
@@ -30,15 +51,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let appDir: String
     
     override init() {
-        // Get the base directory (parent of swift/)
-        let currentPath = FileManager.default.currentDirectoryPath
-        if currentPath.hasSuffix("/swift") {
-            appDir = (currentPath as NSString).deletingLastPathComponent
+        logDebug("AppDelegate init started")
+        let fileManager = FileManager.default
+        let bundlePath = Bundle.main.bundlePath
+        let isPackaged = bundlePath.hasSuffix(".app")
+        
+        let calculatedAppDir: String
+        
+        if isPackaged {
+            logDebug("Run mode: Packaged (.app)")
+            // Use Application Support for config
+            guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+                logDebug("FATAL: Could not find Application Support directory")
+                fatalError("Could not find Application Support directory")
+            }
+            let appConfigDir = appSupport.appendingPathComponent("WhisperMac")
+            
+            // Create directory if it doesn't exist
+            do {
+                try fileManager.createDirectory(at: appConfigDir, withIntermediateDirectories: true)
+                logDebug("Config dir: \(appConfigDir.path)")
+            } catch {
+                logDebug("FATAL: Could not create config dir: \(error)")
+            }
+            
+            calculatedAppDir = appConfigDir.path
         } else {
-            appDir = currentPath
+            // Development mode: use local directory
+            let currentPath = fileManager.currentDirectoryPath
+            if currentPath.hasSuffix("/swift") {
+                calculatedAppDir = (currentPath as NSString).deletingLastPathComponent
+            } else {
+                calculatedAppDir = currentPath
+            }
         }
         
+        self.appDir = calculatedAppDir
         super.init()
+        
         loadConfig()
     }
     
@@ -88,15 +138,75 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        logDebug("applicationDidFinishLaunching triggered")
         // Check if onboarding is complete
         let onboardingComplete = UserDefaults.standard.bool(forKey: "onboardingComplete")
         
-        if !onboardingComplete {
+        // Version Check: Force onboarding if version changed or new install
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let lastRunVersion = UserDefaults.standard.string(forKey: "lastRunVersion")
+        let versionChanged = currentVersion != lastRunVersion
+        
+        // Critical: Check if model file actually exists
+        let modelExists = FileManager.default.fileExists(atPath: modelPath)
+        
+        // Accessibility check: Vital for hotkeys
+        let accessibilityGranted = AXIsProcessTrusted()
+        
+        logDebug("Onboarding state: complete=\(onboardingComplete), model=\(modelExists), versionChanged=\(versionChanged), accessibility=\(accessibilityGranted)")
+        
+        if !onboardingComplete || !modelExists || versionChanged || !accessibilityGranted {
+            logDebug("Decision: Triggering Onboarding")
+            
+            // Reset flags for fresh start if accessibility is missing or it's a new version
+            if !accessibilityGranted || versionChanged {
+                UserDefaults.standard.set(false, forKey: "onboardingComplete")
+            }
+            
             showOnboarding()
             return
         }
         
+        logDebug("Decision: Starting App normally")
+        // Save current version if we are starting normally
+        UserDefaults.standard.set(currentVersion, forKey: "lastRunVersion")
+        
         startApp()
+        
+        // Open settings by default so user sees something (only if it's the first time on this version)
+        if versionChanged {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.openSettings()
+            }
+        }
+    }
+
+    @objc func resetApp() {
+        let alert = NSAlert()
+        alert.messageText = "¿Resetear WhisperMac?"
+        alert.informativeText = "Esto eliminará toda la configuración y el modelo descargado. La aplicación se cerrará y deberás configurarla de nuevo."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Resetear y Salir")
+        alert.addButton(withTitle: "Cancelar")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            print("🧹 Reseteando aplicación...")
+            
+            // Clear UserDefaults
+            if let bundleID = Bundle.main.bundleIdentifier {
+                UserDefaults.standard.removePersistentDomain(forName: bundleID)
+            }
+            
+            // Delete Application Support folder
+            let fileManager = FileManager.default
+            if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+                let appConfigDir = appSupport.appendingPathComponent("WhisperMac")
+                try? fileManager.removeItem(at: appConfigDir)
+            }
+            
+            // Quit
+            NSApplication.shared.terminate(nil)
+        }
     }
     
     func showOnboarding() {
@@ -104,6 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingController?.onComplete = { [weak self] in
             // Delay to allow window to close properly
             DispatchQueue.main.async {
+                print("🚀 Onboarding complete callback triggered")
                 self?.onboardingController = nil
                 self?.startApp()
             }
@@ -122,7 +233,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingController?.show(hotkeyConfig: hotkeyBinding, hotkeyMode: modeBinding)
     }
     
+    // Prevent app from terminating when the last window (onboarding) closes
+    // This is critical for menu bar apps that should stay running without visible windows
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+    
     func startApp() {
+        print("🚀 startApp() called")
         // Update model path to use downloaded model
         if ModelDownloader.shared.isModelDownloaded() {
             config.modelPath = ModelDownloader.shared.getModelPath()
@@ -135,24 +253,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         saveConfig()
         
+        print("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language)")
+        
         // Create floating indicator
+        print("🚀 Creating FloatingIndicatorWindow...")
         floatingIndicator = FloatingIndicatorWindow()
         floatingIndicator.hotkeyDisplayString = config.hotkey.displayString
+        floatingIndicator.onOpenSettings = { [weak self] in
+            self?.openSettings()
+        }
+        floatingIndicator.onStartRecording = { [weak self] in
+            self?.startRecording()
+        }
+        floatingIndicator.onStopRecording = { [weak self] in
+            self?.stopRecording()
+        }
+        floatingIndicator.onCancelRecording = { [weak self] in
+            self?.cancelRecording()
+        }
         floatingIndicator.orderFront(nil)
+        print("🚀 FloatingIndicatorWindow created and shown")
         
         // Create status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "🎤"
+        if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+            image.isTemplate = true // Allows it to adapt to dark/light mode
+            statusItem.button?.image = image
+            statusItem.button?.title = "" // Clear text
+        } else {
+            statusItem.button?.title = "LW" // Fallback
+        }
         
         // Create menu
         updateMenu()
         
         // Setup global hotkey monitor
         setupHotkeyMonitor()
+        setupEscapeMonitor()
         
         print("WhisperMac Swift iniciado.")
         print("Modelo: \(modelPath)")
         print("Hotkey: \(config.hotkey.displayString) (\(config.hotkeyMode.displayName))")
+        print("🎧 Hotkey keyCode: \(config.hotkey.keyCode), modifiers: \(config.hotkey.modifiers)")
     }
     
     func updateMenu() {
@@ -171,6 +313,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let prefsItem = NSMenuItem(title: "Preferencias...", action: #selector(openSettings), keyEquivalent: ",")
         prefsItem.target = self
         menu.addItem(prefsItem)
+        
+        let resetItem = NSMenuItem(title: "Resetear aplicación...", action: #selector(resetApp), keyEquivalent: "")
+        resetItem.target = self
+        menu.addItem(resetItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -203,6 +349,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let monitor = flagsMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = keyDownMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = keyUpMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localKeyDownMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localKeyUpMonitor { NSEvent.removeMonitor(monitor) }
+        
+        // Check accessibility permissions
+        let trusted = AXIsProcessTrusted()
+        print("🔑 Accessibility permission: \(trusted ? "GRANTED ✅" : "DENIED ❌")")
+        
+        if !trusted {
+            print("⚠️ WARNING: Hotkeys will NOT work without Accessibility permission!")
+            print("   Please go to System Settings > Privacy & Security > Accessibility")
+            print("   and enable 'Local Whisper' or 'WhisperMac'")
+            
+            // Open accessibility settings
+            DispatchQueue.main.async {
+                let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        
+        print("🎹 Setting up hotkey monitor for keyCode \(config.hotkey.keyCode) with modifiers: \(config.hotkey.modifiers)")
+        print("🎹 Current hotkey config: \(config.hotkey.displayString)")
         
         // Monitor modifier flags
         flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -210,26 +378,92 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.checkHotkey()
         }
         
-        // Monitor key down
+        // Local monitor for flags (when app is focused)
+        NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            self?.checkHotkey()
+            return event
+        }
+        
+        // Monitor key down (Global)
         keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return }
             if event.keyCode == self.config.hotkey.keyCode {
-                self.hotkeyKeyPressed = true
-                self.checkHotkey()
+                // Update modifiers from the keyDown event to ensure accuracy
+                self.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                if !self.isHotkeyDown {
+                    self.isHotkeyDown = true
+                    self.hotkeyKeyPressed = true
+                    self.checkHotkey()
+                }
             }
         }
+
+        // Monitor key down (Local - for when app has focus)
+        localKeyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            if event.keyCode == self.config.hotkey.keyCode {
+                // Update modifiers from the keyDown event to ensure accuracy
+                self.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                if !self.isHotkeyDown {
+                    self.isHotkeyDown = true
+                    self.hotkeyKeyPressed = true
+                    self.checkHotkey()
+                }
+                // Consume the event when modifiers match to prevent system beep sound
+                if self.checkModifiersMatch() {
+                    return nil
+                }
+            }
+            return event
+        }
         
-        // Monitor key up
+        // Monitor key up (Global)
         keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
             guard let self = self else { return }
             if event.keyCode == self.config.hotkey.keyCode {
-                self.hotkeyKeyPressed = false
-                
-                // For push-to-talk mode, stop recording on key release
-                if self.config.hotkeyMode == .pushToTalk && self.isRecording {
-                    self.stopRecording()
-                }
+                self.isHotkeyDown = false
+                self.handleKeyUp()
             }
+        }
+
+        // Monitor key up (Local)
+        localKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            guard let self = self else { return event }
+            if event.keyCode == self.config.hotkey.keyCode {
+                self.isHotkeyDown = false
+                self.handleKeyUp()
+            }
+            return event
+        }
+    }
+    
+    func handleKeyUp() {
+        self.hotkeyKeyPressed = false
+        
+        // For push-to-talk mode, stop recording on key release
+        if self.config.hotkeyMode == .pushToTalk && self.isRecording {
+            print("🔼 Key released in Push-to-Talk mode - stopping recording")
+            self.stopRecording()
+        }
+    }
+    
+    func setupEscapeMonitor() {
+        // Monitor ESC key to cancel recording
+        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 && self?.isRecording == true {  // 53 = ESC key
+                print("⎋ ESC pressed - canceling recording")
+                self?.cancelRecording()
+            }
+        }
+        
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 && self?.isRecording == true {  // 53 = ESC key
+                print("⎋ ESC pressed - canceling recording")
+                self?.cancelRecording()
+                return nil  // Consume the event
+            }
+            return event
         }
     }
     
@@ -240,15 +474,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             switch config.hotkeyMode {
             case .pushToTalk:
                 if !isRecording {
+                    print("🔽 Push-to-Talk: Key down - starting recording")
                     startRecording()
                 }
             case .toggle:
                 if isRecording {
+                    // Toggle mode: Pressing hotkey AGAIN while recording = STOP and TRANSCRIBE
+                    print("⏹️ Hotkey pressed during recording - stopping and transcribing")
                     stopRecording()
                 } else {
                     startRecording()
                 }
-                // Reset to prevent multiple toggles from held key
+                // Reset flag for this cycle
                 hotkeyKeyPressed = false
             }
         }
@@ -275,7 +512,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isRecording = true
         
         DispatchQueue.main.async {
-            self.statusItem.button?.title = "🔴"
+            if let image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "Recording") {
+                image.isTemplate = true
+                self.statusItem.button?.image = image
+            }
             self.updateStatusMenuItem("Grabando...")
             self.floatingIndicator.setState(.recording)
         }
@@ -306,7 +546,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             print("Error al grabar: \(error)")
             isRecording = false
-            statusItem.button?.title = "🎤"
+            if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+                image.isTemplate = true
+                statusItem.button?.image = image
+            }
             floatingIndicator.setState(.idle)
         }
     }
@@ -317,9 +560,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             recorder.updateMeters()
             let power = recorder.averagePower(forChannel: 0)
-            // Convert dB to 0-1 range (dB typically ranges from -160 to 0)
-            let normalizedLevel = max(0, (power + 50) / 50)
-            self.floatingIndicator.updateAudioLevel(normalizedLevel)
+            // Convert dB to linearly scaling 0-1 range
+            // Typical noise floor is around -60dB -> map -60...0 to 0...1
+            let minDb: Float = -60.0
+            let normalizedLevel = max(0, (power - minDb) / -minDb)
+            // Boost low levels slightly for better visibility
+            let boostedLevel = pow(normalizedLevel, 0.8) * 1.2
+            self.floatingIndicator.updateAudioLevel(min(1.0, boostedLevel))
         }
     }
     
@@ -337,7 +584,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         audioRecorder = nil
         
         DispatchQueue.main.async {
-            self.statusItem.button?.title = "⏳"
+            if let image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Transcribing") {
+                image.isTemplate = true
+                self.statusItem.button?.image = image
+            }
             self.updateStatusMenuItem("Transcribiendo...")
             self.floatingIndicator.setState(.transcribing)
         }
@@ -348,12 +598,109 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         transcribe()
     }
     
+    func cancelRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        
+        print("❌ Recording canceled.")
+        
+        stopAudioLevelMonitoring()
+        audioRecorder?.stop()
+        audioRecorder = nil
+        
+        // Delete temp file without transcribing (silently in background)
+        if let url = tempAudioURL {
+            DispatchQueue.global(qos: .utility).async {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        tempAudioURL = nil
+        
+        // Update UI immediately on main thread
+        DispatchQueue.main.async {
+            if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+                image.isTemplate = true
+                self.statusItem.button?.image = image
+            }
+            self.updateStatusMenuItem("Listo")
+            self.floatingIndicator.setState(.idle, silent: true)
+        }
+    }
+    
+    func getWhisperCliPath() -> String? {
+        // 1. Check inside App Bundle (Production)
+        if let bundlePath = Bundle.main.path(forResource: "whisper-cli", ofType: nil, inDirectory: "bin") {
+             print("Found whisper-cli in bundle: \(bundlePath)")
+            return bundlePath
+        }
+        
+        // 2. Check local bin directory (Development)
+        let localBinPath = "\(appDir)/bin/whisper-cli"
+        if FileManager.default.fileExists(atPath: localBinPath) {
+             print("Found whisper-cli in local bin: \(localBinPath)")
+            return localBinPath
+        }
+        
+        // 3. Last resort: try system path (Legacy/Homebrew)
+        if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/whisper-cli") {
+            return "/opt/homebrew/bin/whisper-cli"
+        }
+        
+        return nil
+    }
+
     func transcribe() {
         guard let audioURL = tempAudioURL else { return }
         
+        let desktopPath = NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first!
+        let logURL = URL(fileURLWithPath: desktopPath).appendingPathComponent("whisper_debug.log")
+        
+        func log(_ message: String) {
+            let timestamp = Date().description
+            let logMessage = "[\(timestamp)] \(message)\n"
+            print(message)
+            if let data = logMessage.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: logURL.path) {
+                    if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+                        fileHandle.seekToEndOfFile()
+                        fileHandle.write(data)
+                        fileHandle.closeFile()
+                    }
+                } else {
+                    try? data.write(to: logURL)
+                }
+            }
+        }
+
+        log("🚀 Iniciando transcripción...")
+        log("📁 Archivo de audio: \(audioURL.path)")
+        log("⚙️ Idioma: \(config.language)")
+        log("🧠 Modelo: \(modelPath)")
+
+        guard let whisperPath = getWhisperCliPath() else {
+            log("❌ Error: No se encontró whisper-cli")
+            DispatchQueue.main.async {
+                if let image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Error") {
+                    image.isTemplate = true
+                    self.statusItem.button?.image = image
+                }
+                self.updateStatusMenuItem("Error: Falta binario")
+                self.floatingIndicator.setState(.idle)
+            }
+            return
+        }
+        
+        log("🛠 CLI Path: \(whisperPath)")
+        
         DispatchQueue.global(qos: .userInitiated).async { [self] in
+            // Check audio file size
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: audioURL.path) {
+                let size = attrs[.size] as? Int64 ?? 0
+                log("🎙️ Audio file size: \(size) bytes")
+            }
+            
             let cmd = [
-                "/opt/homebrew/bin/whisper-cli",
+                whisperPath,
                 "-m", modelPath,
                 "-f", audioURL.path,
                 "-nt",          // No timestamps
@@ -363,15 +710,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "-l", config.language
             ]
             
-            print("Ejecutando: \(cmd.joined(separator: " "))")
+            log("🏃 Ejecutando: \(cmd.joined(separator: " "))")
             
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/whisper-cli")
+            process.executableURL = URL(fileURLWithPath: whisperPath)
             process.arguments = Array(cmd.dropFirst())
+            
+            // Fix library loading for packaged app by forcing DYLD_LIBRARY_PATH
+            var env = ProcessInfo.processInfo.environment
+            if let resourcePath = Bundle.main.resourcePath {
+                let libPath = resourcePath + "/lib"
+                env["DYLD_LIBRARY_PATH"] = libPath
+                process.environment = env
+                log("🔧 Set DYLD_LIBRARY_PATH: \(libPath)")
+            }
             
             let pipe = Pipe()
             process.standardOutput = pipe
-            process.standardError = FileHandle.nullDevice
+            
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
             
             do {
                 try process.run()
@@ -380,12 +738,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let output = String(data: data, encoding: .utf8) ?? ""
                 
-                // Parse output
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+                
+                if !output.isEmpty { log("📤 STDOUT:\n\(output)") }
+                if !errorOutput.isEmpty { log("⚠️ STDERR:\n\(errorOutput)") }
+                
                 let text = parseWhisperOutput(output)
                 
                 DispatchQueue.main.async {
                     if !text.isEmpty {
-                        print("Transcripción: \(text)")
+                        log("✅ Transcripción exitosa: \(text)")
                         
                         // Copy to clipboard
                         NSPasteboard.general.clearContents()
@@ -399,21 +762,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.updateStatusMenuItem("Listo")
                         self.floatingIndicator.setState(.idle)
                     } else {
-                        print("No se detectó texto")
+                        log("❓ No se detectó texto en la transcripción")
                         self.updateStatusMenuItem("Sin texto")
                         self.floatingIndicator.setState(.idle)
                     }
                     
-                    self.statusItem.button?.title = "🎤"
+                    if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+                        image.isTemplate = true
+                        self.statusItem.button?.image = image
+                    }
                 }
                 
-                // Cleanup
                 try? FileManager.default.removeItem(at: audioURL)
                 
             } catch {
-                print("Error en transcripción: \(error)")
+                log("💀 Error fatal en transcripción: \(error)")
                 DispatchQueue.main.async {
-                    self.statusItem.button?.title = "❌"
+                    if let image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "Error") {
+                         image.isTemplate = true
+                         self.statusItem.button?.image = image
+                    }
                     self.updateStatusMenuItem("Error")
                     self.floatingIndicator.setState(.idle)
                 }
@@ -460,5 +828,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory) // Menu bar app, no dock icon
+app.setActivationPolicy(.regular) // Switch to regular for debugging visibility
 app.run()

@@ -182,23 +182,41 @@ class HotkeyRecorderNSView: NSView {
         
         let bgColor = isRecordingHotkey 
             ? NSColor.controlAccentColor.withAlphaComponent(0.2)
-            : NSColor.controlBackgroundColor
+            : NSColor.white // Force white background
         bgColor.setFill()
         
+        // Add a light border/shadow for visibility on white
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
         path.fill()
         
         // Border
-        let borderColor = isRecordingHotkey ? NSColor.controlAccentColor : NSColor.separatorColor
+        let borderColor = isRecordingHotkey ? NSColor.controlAccentColor : NSColor.lightGray
         borderColor.setStroke()
         path.lineWidth = 1.5
         path.stroke()
         
         // Text
-        let text = isRecordingHotkey ? "Presiona teclas..." : currentHotkey.displayString
+        let text: String
+        if isRecordingHotkey {
+            // Show currently pressed modifiers if any, otherwise prompt
+            let currentMods = NSEvent.modifierFlags.intersection([.command, .shift, .option, .control])
+            if !currentMods.isEmpty {
+                var parts: [String] = []
+                if currentMods.contains(.command) { parts.append("⌘") }
+                if currentMods.contains(.control) { parts.append("⌃") }
+                if currentMods.contains(.option) { parts.append("⌥") }
+                if currentMods.contains(.shift) { parts.append("⇧") }
+                text = parts.joined() + "..."
+            } else {
+                text = "Presiona teclas..."
+            }
+        } else {
+            text = currentHotkey.displayString
+        }
+        
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor.labelColor
+            .foregroundColor: NSColor.black
         ]
         let size = text.size(withAttributes: attrs)
         let point = NSPoint(
@@ -227,15 +245,17 @@ class HotkeyRecorderNSView: NSView {
         if event.modifierFlags.contains(.shift) { modifiers.append("shift") }
         
         // Local function to check for F-keys
-        let isFunctionKey = (event.keyCode == 122 || event.keyCode == 120 || event.keyCode == 99 || 
-                           event.keyCode == 118 || event.keyCode == 96 || event.keyCode == 97 || 
-                           event.keyCode == 98 || event.keyCode == 100 || event.keyCode == 101 || 
-                           event.keyCode == 109 || event.keyCode == 103 || event.keyCode == 111)
+        // Local function to check for F-keys removed as we now accept all keys
 
-        // Require at least one modifier OR it's a function key
-        if !modifiers.isEmpty || isFunctionKey {
-            onHotkeyRecorded?(event.keyCode, modifiers)
+        // Accept any key combination
+        onHotkeyRecorded?(event.keyCode, modifiers)
+    }
+    
+    override func flagsChanged(with event: NSEvent) {
+        if isRecordingHotkey {
+            needsDisplay = true
         }
+        super.flagsChanged(with: event)
     }
 }
 
@@ -252,14 +272,14 @@ struct SettingsView: View {
             HStack {
                 Image(systemName: "mic.fill")
                     .font(.title2)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(.black)
                 Text("WhisperMac")
                     .font(.title2)
                     .fontWeight(.semibold)
                 Spacer()
             }
             .padding()
-            .background(Color(NSColor.windowBackgroundColor))
+            .background(Color.white)
             
             Divider()
             
@@ -303,22 +323,24 @@ struct SettingsView: View {
                     Toggle("Auto-pegar transcripción", isOn: $config.autoPaste)
                 } header: {
                     Label("Opciones", systemImage: "gearshape")
+                        .foregroundColor(.black)
                 }
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
+            .background(Color.white)
             .frame(minHeight: 280)
             
             Divider()
             
             // Footer Buttons
             HStack {
+                Spacer()
+                
                 Button("Cancelar") {
                     onCancel()
                 }
                 .keyboardShortcut(.escape)
-                
-                Spacer()
                 
                 Button("Guardar") {
                     onSave(config)
@@ -329,7 +351,8 @@ struct SettingsView: View {
             .padding()
         }
         .frame(width: 500, height: 420)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.white)
+        .foregroundColor(.black)
     }
 }
 
@@ -344,6 +367,7 @@ class SettingsWindowController: NSWindowController {
         )
         window.title = "WhisperMac Preferencias"
         window.center()
+        window.backgroundColor = .white
         
         self.init(window: window)
         

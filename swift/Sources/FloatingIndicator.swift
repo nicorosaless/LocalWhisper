@@ -19,6 +19,14 @@ class FloatingIndicatorWindow: NSWindow {
     private var startSound: NSSound?
     private var stopSound: NSSound?
     
+    // Callback for settings
+    var onOpenSettings: (() -> Void)?
+    
+    // Callbacks for recording control
+    var onStartRecording: (() -> Void)?
+    var onStopRecording: (() -> Void)?
+    var onCancelRecording: (() -> Void)?
+    
     // Animation
     private var animationTimer: Timer?
     
@@ -27,6 +35,7 @@ class FloatingIndicatorWindow: NSWindow {
     private var tooltipWindow: NSWindow?
     private var tooltipTimer: Timer?
     private var isHovering = false
+    private var isHoveringX = false
     
     // Hotkey display string (set from main.swift)
     var hotkeyDisplayString: String = "⌘⇧Space"
@@ -36,18 +45,69 @@ class FloatingIndicatorWindow: NSWindow {
     private let idleHeight: CGFloat = 12
     
     // Expanded size (hover and recording use same size)
-    private let expandedWidth: CGFloat = 120
-    private let expandedHeight: CGFloat = 26
+    private let expandedWidth: CGFloat = 80
+    private let expandedHeight: CGFloat = 24
+    
+    // Screen tracking
+    private var screenCheckTimer: Timer?
+    private var currentScreen: NSScreen?
+    
+    // Get the screen containing the mouse cursor
+    private static func screenWithMouse() -> NSScreen {
+        let mouseLocation = NSEvent.mouseLocation
+        for screen in NSScreen.screens {
+            if screen.frame.contains(mouseLocation) {
+                return screen
+            }
+        }
+        return NSScreen.main ?? NSScreen.screens.first!
+    }
+    
+    // Calculate the Y position based on dock visibility for a specific screen
+    private static func calculateBottomY(for screen: NSScreen) -> CGFloat {
+        print("🚀 calculateBottomY for screen: \(screen.frame)")
+        let fullFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
+        
+        // The dock takes space from the bottom when visible
+        // If visibleFrame.origin.y is close to fullFrame.origin.y, dock is hidden or on sides
+        let dockHeightAtBottom = visibleFrame.origin.y - fullFrame.origin.y
+        
+        if dockHeightAtBottom < 10 {
+            // Dock is hidden or on the side - position at very bottom of screen
+            return fullFrame.origin.y + 8
+        } else {
+            // Dock is visible at bottom - position above it
+            return visibleFrame.origin.y + 20
+        }
+    }
     
     init() {
         indicatorView = IndicatorView(frame: NSRect(x: 0, y: 0, width: 36, height: 12))
         
-        // Get screen dimensions
-        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+        // Get screen where mouse is located
+        let screen = Self.screenWithMouse()
+        let fullScreenFrame = screen.frame
         
-        // Position: bottom center, above dock
-        let x = (screenFrame.width - 36) / 2 + screenFrame.origin.x
-        let y = screenFrame.origin.y + 20
+        // Position: bottom center of the screen with mouse, respecting dock visibility
+        // Position: bottom center of the screen with mouse, respecting dock visibility
+        var x = (fullScreenFrame.width - 36) / 2 + fullScreenFrame.origin.x
+        var y = Self.calculateBottomY(for: screen)
+        
+        // Safety check: if coordinates are weird (e.g. negative or huge), reset to main screen center-bottom
+        if x < -10000 || x > 10000 || y < -10000 || y > 10000 {
+             print("⚠️ Weird coordinates detected (x:\(x), y:\(y)), resetting to main screen")
+             if let main = NSScreen.main {
+                 let mf = main.frame
+                 x = mf.midX - 18
+                 y = mf.minY + 50
+             } else {
+                 x = 100
+                 y = 100
+             }
+        }
+        
+        print("🚀 FloatingIndicator init frame: x=\(x), y=\(y)")
         
         let frame = NSRect(x: x, y: y, width: 36, height: 12)
         
@@ -58,22 +118,173 @@ class FloatingIndicatorWindow: NSWindow {
             defer: false
         )
         
+        currentScreen = screen
+        
         // Window configuration
         self.isOpaque = false
         self.backgroundColor = .clear
         self.level = .floating
-        self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary] // Added fullScreenAuxiliary
         self.hasShadow = true
-        self.isMovableByWindowBackground = true
+        self.isMovableByWindowBackground = false // Disable to allow click handling
+        self.isReleasedWhenClosed = false
+        self.hidesOnDeactivate = false
+        self.acceptsMouseMovedEvents = true
+        self.ignoresMouseEvents = false
         
         self.contentView = indicatorView
+        
+        // Set up click handlers
+        indicatorView.onClicked = { [weak self] in
+            guard let self = self else { return }
+            if self.currentState == .idle || self.currentState == .hovering {
+                self.onStartRecording?()
+            } else if self.currentState == .recording {
+                self.onStopRecording?()
+            }
+        }
+        
+        // DEBUG: Force center position initially
+        if let mainScreen = NSScreen.main {
+            let centerRect = NSRect(
+                x: mainScreen.visibleFrame.midX - 18,
+                y: mainScreen.visibleFrame.midY - 6,
+                width: 36,
+                height: 12
+            )
+            self.setFrame(centerRect, display: true)
+            print("🚀 FORCED FRAME TO CENTER: \(centerRect)")
+        }
+        
+        // Timer to print frame repeatedly
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            print("🪟 Indicator Frame: \(self?.frame ?? .zero), Visible: \(self?.isVisible ?? false), Alpha: \(self?.alphaValue ?? 0)")
+        }
         
         // Start hover detection timer
         startHoverDetection()
         
+        // Start screen change detection
+        startScreenDetection()
+        
         // Load sounds asynchronously
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.loadSounds()
+        }
+    }
+    
+    private func startScreenDetection() {
+        // Check which screen has the mouse every 200ms
+        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.checkScreenChange()
+        }
+        RunLoop.main.add(screenCheckTimer!, forMode: .common)
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        print("👆 Window clicked! State: \(currentState)")
+        if currentState == .idle || currentState == .hovering {
+            // Show first-use tooltip
+            let hasUsedClickToRecord = UserDefaults.standard.bool(forKey: "hasUsedClickToRecord")
+            if !hasUsedClickToRecord {
+                showFirstClickToast()
+                UserDefaults.standard.set(true, forKey: "hasUsedClickToRecord")
+            }
+            onStartRecording?()
+        } else if currentState == .recording {
+            // Any click during recording = cancel immediately (no transcription)
+            print("❌ Clicked during recording - canceling")
+            onCancelRecording?()
+        }
+    }
+    
+    override func mouseMoved(with event: NSEvent) {
+        guard currentState == .recording else { return }
+        
+        let mouseLocation = event.locationInWindow
+        let xAreaStart = expandedWidth - 24
+        let wasHoveringX = isHoveringX
+        isHoveringX = mouseLocation.x > xAreaStart
+        
+        if wasHoveringX != isHoveringX {
+            indicatorView.setXHighlighted(isHoveringX)
+        }
+    }
+    
+    private func showFirstClickToast() {
+        // Calculate tooltip position (above the indicator)
+        let indicatorFrame = self.frame
+        let tooltipText = "🎵 Click again to stop recording"
+        
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let size = tooltipText.size(withAttributes: [.font: font])
+        let padding: CGFloat = 12
+        let tooltipWidth = size.width + padding * 2
+        let tooltipHeight: CGFloat = 28
+        
+        let tooltipX = indicatorFrame.midX - tooltipWidth / 2
+        let tooltipY = indicatorFrame.maxY + 15
+        
+        let tooltipFrame = NSRect(x: tooltipX, y: tooltipY, width: tooltipWidth, height: tooltipHeight)
+        
+        let toastWindow = NSWindow(
+            contentRect: tooltipFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        
+        toastWindow.isOpaque = false
+        toastWindow.backgroundColor = .clear
+        toastWindow.level = .floating
+        toastWindow.hasShadow = true
+        
+        // Create label
+        let label = NSTextField(labelWithString: tooltipText)
+        label.font = font
+        label.textColor = .white
+        label.backgroundColor = .clear
+        label.isBezeled = false
+        label.isEditable = false
+        label.sizeToFit()
+        
+        // Create background view
+        let bgView = TooltipBackgroundView(frame: NSRect(x: 0, y: 0, width: tooltipWidth, height: tooltipHeight))
+        label.frame = NSRect(x: padding, y: (tooltipHeight - label.frame.height) / 2, width: label.frame.width, height: label.frame.height)
+        bgView.addSubview(label)
+        
+        toastWindow.contentView = bgView
+        toastWindow.orderFront(nil)
+        
+        // Auto-hide after 3 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            toastWindow.orderOut(nil)
+        }
+    }
+    
+    private func checkScreenChange() {
+        let newScreen = Self.screenWithMouse()
+        
+        // Only move if the screen changed
+        if currentScreen != newScreen {
+            currentScreen = newScreen
+            moveToScreen(newScreen)
+        }
+    }
+    
+    private func moveToScreen(_ screen: NSScreen) {
+        let fullScreenFrame = screen.frame
+        let currentWidth = self.frame.width
+        let currentHeight = self.frame.height
+        
+        let newX = (fullScreenFrame.width - currentWidth) / 2 + fullScreenFrame.origin.x
+        let newY = Self.calculateBottomY(for: screen)
+        
+        // Animate the move to the new screen
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.animator().setFrame(NSRect(x: newX, y: newY, width: currentWidth, height: currentHeight), display: true)
         }
     }
     
@@ -119,13 +330,15 @@ class FloatingIndicatorWindow: NSWindow {
         indicatorView.setState(.hovering)
         animateToExpandedSize()
         
-        // Show status tooltip
-        showStatusTooltip()
+        // Show help tooltip immediately (replacing "Listo")
+        print("DEBUG: enterHoverState called - showing help tooltip")
+        showHelpTooltip()
         
-        // Start timer for help tooltip after 1 second
+        // Hide tooltip after 3 seconds
         tooltipTimer?.invalidate()
-        tooltipTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
-            self?.showHelpTooltip()
+        tooltipTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            print("DEBUG: Hiding tooltip")
+            self?.hideTooltip()
         }
     }
     
@@ -178,7 +391,7 @@ class FloatingIndicatorWindow: NSWindow {
         // Position above the indicator
         let indicatorFrame = self.frame
         let tooltipX = indicatorFrame.midX - tooltipWidth / 2
-        let tooltipY = indicatorFrame.maxY + 8
+        let tooltipY = indicatorFrame.maxY + 20
         
         let tooltipFrame = NSRect(x: tooltipX, y: tooltipY, width: tooltipWidth, height: tooltipHeight)
         
@@ -217,20 +430,24 @@ class FloatingIndicatorWindow: NSWindow {
     }
     
     func setState(_ state: IndicatorState) {
+        setState(state, silent: false)
+    }
+    
+    func setState(_ state: IndicatorState, silent: Bool) {
         let previousState = currentState
         currentState = state
         
         // Execute immediately on main thread for minimal latency
         if Thread.isMainThread {
-            handleStateChange(state: state, previousState: previousState)
+            handleStateChange(state: state, previousState: previousState, silent: silent)
         } else {
             DispatchQueue.main.async { [weak self] in
-                self?.handleStateChange(state: state, previousState: previousState)
+                self?.handleStateChange(state: state, previousState: previousState, silent: silent)
             }
         }
     }
     
-    private func handleStateChange(state: IndicatorState, previousState: IndicatorState) {
+    private func handleStateChange(state: IndicatorState, previousState: IndicatorState, silent: Bool = false) {
         // Clear hover state when recording starts
         if state == .recording {
             isHovering = false
@@ -248,7 +465,7 @@ class FloatingIndicatorWindow: NSWindow {
             break
             
         case .recording:
-            if previousState == .idle || previousState == .hovering {
+            if !silent && (previousState == .idle || previousState == .hovering) {
                 startSound?.play()
             }
             indicatorView.setState(.recording)
@@ -256,7 +473,7 @@ class FloatingIndicatorWindow: NSWindow {
             animateToExpandedSize()
             
         case .transcribing:
-            if previousState == .recording {
+            if !silent && previousState == .recording {
                 stopSound?.play()
             }
             indicatorView.setState(.transcribing)
@@ -269,9 +486,10 @@ class FloatingIndicatorWindow: NSWindow {
     }
     
     private func animateToExpandedSize() {
-        let screenFrame = NSScreen.main?.visibleFrame ?? self.frame
-        let newX = (screenFrame.width - expandedWidth) / 2 + screenFrame.origin.x
-        let newY = screenFrame.origin.y + 20
+        let screen = currentScreen ?? Self.screenWithMouse()
+        let fullScreenFrame = screen.frame
+        let newX = (fullScreenFrame.width - expandedWidth) / 2 + fullScreenFrame.origin.x
+        let newY = Self.calculateBottomY(for: screen)
         
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.08
@@ -281,9 +499,10 @@ class FloatingIndicatorWindow: NSWindow {
     }
     
     private func animateToIdleSize() {
-        let screenFrame = NSScreen.main?.visibleFrame ?? self.frame
-        let newX = (screenFrame.width - idleWidth) / 2 + screenFrame.origin.x
-        let newY = screenFrame.origin.y + 20
+        let screen = currentScreen ?? Self.screenWithMouse()
+        let fullScreenFrame = screen.frame
+        let newX = (fullScreenFrame.width - idleWidth) / 2 + fullScreenFrame.origin.x
+        let newY = Self.calculateBottomY(for: screen)
         
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
@@ -343,8 +562,16 @@ class IndicatorView: NSView {
     
     private var state: IndicatorState = .idle
     private var audioLevel: Float = 0.0
-    private var waveformLevels: [CGFloat] = Array(repeating: 0.3, count: 9)
+    private var waveformLevels: [CGFloat] = Array(repeating: 0.3, count: 7)
     private var spinnerAngle: CGFloat = 0.0
+    
+    private var targetWaveformLevels: [CGFloat] = Array(repeating: 0.3, count: 7)
+    
+    // X button highlight state
+    private var xHighlighted = false
+    
+    // Click callback
+    var onClicked: (() -> Void)?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -365,11 +592,52 @@ class IndicatorView: NSView {
         audioLevel = max(0, min(1, level))
     }
     
+    func setXHighlighted(_ highlighted: Bool) {
+        xHighlighted = highlighted
+        needsDisplay = true
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        onClicked?()
+    }
+    
     func animateWaveform() {
+        // Center-weighted animation logic
+        let centerIndex = waveformLevels.count / 2
+        let maxDist = CGFloat(centerIndex)
+        
         for i in 0..<waveformLevels.count {
             let baseLevel = CGFloat(audioLevel)
-            let randomFactor = CGFloat.random(in: 0.3...1.0)
-            waveformLevels[i] = max(0.2, min(1.0, baseLevel * randomFactor + 0.15))
+            
+            // Calculate distance from center (0.0 at center, 1.0 at edges)
+            let distFromCenter = abs(CGFloat(i - centerIndex)) / maxDist
+            
+            // Sensitivity drops off towards edges
+            // Center bars react fully, edges react less but not as drastically (flatter curve)
+            // Improved curve: (1 - x^2) for smoother falloff
+            let positionSensitivity = 1.0 - (distFromCenter * distFromCenter * 0.8)
+            
+            // Generate a target
+            // More variation range for livelier animation
+            let randomVariation = CGFloat.random(in: -0.1...0.25)
+            
+            // Apply sensitivity to the active part of the signal
+            // Scale up the variation based on volume
+            let variationComponent = (randomVariation * baseLevel)
+            
+            // Base height + Volume impact + Randomness
+            // Ensure minimum visibility (0.15) and cap at 1.0
+            var target = (baseLevel * 0.8 * positionSensitivity) + variationComponent + 0.15
+            target = max(0.15, min(1.0, target))
+            
+            targetWaveformLevels[i] = target
+            
+            // Lerp current towards target
+            // Asymmetric smoothing: Attack fast (0.3), Decay slow (0.15)
+            let current = waveformLevels[i]
+            let smoothFactor: CGFloat = target > current ? 0.3 : 0.15
+            
+            waveformLevels[i] = current + (target - current) * smoothFactor
         }
         needsDisplay = true
     }
@@ -387,17 +655,30 @@ class IndicatorView: NSView {
         
         let bounds = self.bounds
         
-        // Draw background pill - solid black
+        // Draw background pill
         let bgColor = NSColor(white: 0.08, alpha: 0.9)
-        bgColor.setFill()
-        
         let cornerRadius = bounds.height / 2
         let bgPath = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: cornerRadius, yRadius: cornerRadius)
-        bgPath.fill()
         
         switch state {
         case .idle:
-            // Plain black pill - nothing drawn
+            // Idle state: slightly transparent background + light border
+            bgColor.withAlphaComponent(0.7).setFill()
+            bgPath.fill()
+            
+            // Light semi-transparent border
+            NSColor(white: 1.0, alpha: 0.3).setStroke()
+            bgPath.lineWidth = 1.0
+            bgPath.stroke()
+            
+        case .hovering, .recording, .transcribing:
+            // Active states: solid background
+            bgColor.setFill()
+            bgPath.fill()
+        }
+        
+        switch state {
+        case .idle:
             break
         case .hovering:
             drawHoveringState(in: bounds)
@@ -409,13 +690,18 @@ class IndicatorView: NSView {
     }
     
     private func drawRecordingState(in bounds: NSRect) {
-        // Draw small gray waveform bars
+        // Draw waveform bars (leaving space for X on right)
         let barCount = waveformLevels.count
-        let barWidth: CGFloat = 3
-        let barSpacing: CGFloat = 5
-        let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
-        let startX = (bounds.width - totalWidth) / 2
-        let maxBarHeight = bounds.height - 8
+        let barWidth: CGFloat = 2.0
+        let barSpacing: CGFloat = 3.0
+        let totalBarsWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
+        
+        // Leave space for X icon on the right
+        let xIconSpace: CGFloat = 16
+        let availableWidth = bounds.width - xIconSpace
+        let startX = (availableWidth - totalBarsWidth) / 2
+        
+        let maxBarHeight = bounds.height - 6
         
         for i in 0..<barCount {
             let x = startX + CGFloat(i) * (barWidth + barSpacing)
@@ -424,11 +710,40 @@ class IndicatorView: NSView {
             
             let barRect = NSRect(x: x, y: y, width: barWidth, height: barHeight)
             
-            // Gray/white color
-            NSColor.white.withAlphaComponent(0.7).setFill()
+            NSColor.white.withAlphaComponent(0.9).setFill()
             let barPath = NSBezierPath(roundedRect: barRect, xRadius: barWidth/2, yRadius: barWidth/2)
             barPath.fill()
         }
+        
+        // Draw X icon on the right side
+        let xSize: CGFloat = 5
+        let xCenterX = bounds.maxX - 12
+        let xCenterY = bounds.midY
+        
+        // Draw highlight circle if hovering
+        if xHighlighted {
+            let circleRadius: CGFloat = 8
+            let circlePath = NSBezierPath(ovalIn: NSRect(
+                x: xCenterX - circleRadius,
+                y: xCenterY - circleRadius,
+                width: circleRadius * 2,
+                height: circleRadius * 2
+            ))
+            NSColor.white.withAlphaComponent(0.2).setFill()
+            circlePath.fill()
+        }
+        
+        // Draw X with appropriate opacity
+        let xOpacity: CGFloat = xHighlighted ? 1.0 : 0.7
+        NSColor.white.withAlphaComponent(xOpacity).setStroke()
+        let xPath = NSBezierPath()
+        xPath.move(to: NSPoint(x: xCenterX - xSize/2, y: xCenterY - xSize/2))
+        xPath.line(to: NSPoint(x: xCenterX + xSize/2, y: xCenterY + xSize/2))
+        xPath.move(to: NSPoint(x: xCenterX + xSize/2, y: xCenterY - xSize/2))
+        xPath.line(to: NSPoint(x: xCenterX - xSize/2, y: xCenterY + xSize/2))
+        xPath.lineWidth = 1.5
+        xPath.lineCapStyle = .round
+        xPath.stroke()
     }
     
     private func drawTranscribingState(in bounds: NSRect) {
@@ -451,10 +766,10 @@ class IndicatorView: NSView {
     }
     
     private func drawHoveringState(in bounds: NSRect) {
-        // Small dots in a row (same layout as recording bars)
-        let dotCount = 9
-        let dotSize: CGFloat = 3
-        let dotSpacing: CGFloat = 6
+        // MATCHING LAYOUT with recording state for seamless transition
+        let dotCount = 11 // Consistent with bar count
+        let dotSize: CGFloat = 2.0
+        let dotSpacing: CGFloat = 3.0 // Consistent with bar spacing
         let totalWidth = CGFloat(dotCount) * dotSize + CGFloat(dotCount - 1) * dotSpacing
         let startX = (bounds.width - totalWidth) / 2
         let y = (bounds.height - dotSize) / 2
@@ -467,5 +782,17 @@ class IndicatorView: NSView {
             let dotPath = NSBezierPath(ovalIn: dotRect)
             dotPath.fill()
         }
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu(title: "Context Menu")
+        let settingsItem = NSMenuItem(title: "Ir a configuración", action: #selector(openSettingsAction), keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+    
+    @objc func openSettingsAction() {
+        (window as? FloatingIndicatorWindow)?.onOpenSettings?()
     }
 }

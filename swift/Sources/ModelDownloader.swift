@@ -10,7 +10,9 @@ class ModelDownloader {
     private init() {}
     
     func getModelsDirectory() -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            fatalError("Could not find Application Support directory")
+        }
         let modelsDir = appSupport.appendingPathComponent("WhisperMac/models")
         
         // Create directory if it doesn't exist

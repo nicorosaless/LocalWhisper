@@ -15,6 +15,11 @@ swift/.swiftpm/
 *.xcworkspace/
 DerivedData/
 
+# Build outputs
+build/
+bin/
+lib/
+
 # Models (large files - download separately)
 models/*.bin
 
@@ -32,3 +37,7 @@ models/*.bin
 
 # Logs
 *.log
+
+# Distribution files (generated, not tracked)
+*.dmg
+*.zip
