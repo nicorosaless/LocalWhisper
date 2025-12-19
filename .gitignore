@@ -41,3 +41,6 @@ models/*.bin
 # Distribution files (generated, not tracked)
 *.dmg
 *.zip
+
+# Exception: Allow DMG in web/public for distribution
+!web/public/*.dmg
