@@ -13,6 +13,7 @@ func logDebug(_ message: String) {
             if let fileHandle = try? FileHandle(forWritingTo: logURL) {
                 fileHandle.seekToEndOfFile()
                 fileHandle.write(data)
+                try? fileHandle.synchronize() // Force flush
                 fileHandle.closeFile()
             }
         } else {
@@ -42,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var pressedModifiers: NSEvent.ModifierFlags = []
     var hotkeyKeyPressed = false
     var isHotkeyDown = false // Tracks if the physical key is currently pressed
+    var isAppStarted = false // Prevent multiple app starts
     
     // Audio level timer
     var audioLevelTimer: Timer?
@@ -168,10 +170,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         logDebug("Decision: Starting App normally")
-        // Save current version if we are starting normally
-        UserDefaults.standard.set(currentVersion, forKey: "lastRunVersion")
         
-        startApp()
+        // Wrap in do-catch just in case
+        do {
+             // Save current version if we are starting normally
+             UserDefaults.standard.set(currentVersion, forKey: "lastRunVersion")
+             logDebug("UserDefaults saved")
+             
+             startApp()
+        } catch {
+             logDebug("CRITICAL ERROR in startup sequence: \(error)")
+        }
         
         // Open settings by default so user sees something (only if it's the first time on this version)
         if versionChanged {
@@ -211,26 +220,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func showOnboarding() {
         onboardingController = OnboardingWindowController()
-        onboardingController?.onComplete = { [weak self] in
-            // Delay to allow window to close properly
+        onboardingController?.onComplete = { [weak self] hotkeyConfig, hotkeyMode in
             DispatchQueue.main.async {
-                print("🚀 Onboarding complete callback triggered")
+                print("🚀 Onboarding complete callback triggered with hotkey: \(hotkeyConfig.displayString), mode: \(hotkeyMode)")
+                // Save the received config values
+                self?.config.hotkey = hotkeyConfig
+                self?.config.hotkeyMode = hotkeyMode
+                self?.saveConfig()
                 self?.onboardingController = nil
                 self?.startApp()
             }
         }
         
-        // Create bindings with explicit capture
-        let hotkeyBinding = Binding<HotkeyConfig>(
-            get: { [weak self] in self?.config.hotkey ?? .defaultConfig },
-            set: { [weak self] in self?.config.hotkey = $0 }
+        // Pass current config values
+        onboardingController?.show(
+            initialHotkeyConfig: config.hotkey,
+            initialHotkeyMode: config.hotkeyMode
         )
-        let modeBinding = Binding<HotkeyMode>(
-            get: { [weak self] in self?.config.hotkeyMode ?? .pushToTalk },
-            set: { [weak self] in self?.config.hotkeyMode = $0 }
-        )
-        
-        onboardingController?.show(hotkeyConfig: hotkeyBinding, hotkeyMode: modeBinding)
     }
     
     // Prevent app from terminating when the last window (onboarding) closes
@@ -240,7 +246,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func startApp() {
-        print("🚀 startApp() called")
+        logDebug("🚀 startApp() called")
+        guard !isAppStarted else {
+            logDebug("⚠️ startApp() called but app is already started. Skipping.")
+            return
+        }
+        isAppStarted = true
+        
         // Update model path to use downloaded model
         if ModelDownloader.shared.isModelDownloaded() {
             config.modelPath = ModelDownloader.shared.getModelPath()
@@ -253,10 +265,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         saveConfig()
         
-        print("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language)")
+        logDebug("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language)")
         
-        // Create floating indicator
-        print("🚀 Creating FloatingIndicatorWindow...")
+        // Create floating indicator (already on main thread from callback)
+        logDebug("🚀 Creating FloatingIndicatorWindow...")
         floatingIndicator = FloatingIndicatorWindow()
         floatingIndicator.hotkeyDisplayString = config.hotkey.displayString
         floatingIndicator.onOpenSettings = { [weak self] in
@@ -272,9 +284,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.cancelRecording()
         }
         floatingIndicator.orderFront(nil)
-        print("🚀 FloatingIndicatorWindow created and shown")
+        logDebug("🚀 FloatingIndicatorWindow created and shown")
         
         // Create status bar item
+        logDebug("📊 Creating status bar item...")
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
             image.isTemplate = true // Allows it to adapt to dark/light mode
@@ -283,14 +296,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             statusItem.button?.title = "LW" // Fallback
         }
+        logDebug("📊 Status bar item created")
         
         // Create menu
+        logDebug("📋 Creating menu...")
         updateMenu()
+        logDebug("📋 Menu created")
         
         // Setup global hotkey monitor
+        logDebug("⌨️ Setting up hotkey monitors...")
         setupHotkeyMonitor()
         setupEscapeMonitor()
+        logDebug("⌨️ Hotkey monitors set up")
         
+        logDebug("✅ startApp() completed successfully")
         print("WhisperMac Swift iniciado.")
         print("Modelo: \(modelPath)")
         print("Hotkey: \(config.hotkey.displayString) (\(config.hotkeyMode.displayName))")

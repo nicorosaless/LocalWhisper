@@ -1,12 +1,13 @@
 {
-  "auto_paste" : true,
-  "language" : "es",
-  "hotkey_mode" : "toggle",
-  "model_path" : "\/Users\/testnico\/Library\/Application Support\/WhisperMac\/models\/ggml-small.bin",
   "hotkey" : {
     "modifiers" : [
 
     ],
-    "keyCode" : 109
-  }
+    "keyCharacter" : "F6",
+    "keyCode" : 97
+  },
+  "model_path" : "\/Users\/testnico\/Library\/Application Support\/WhisperMac\/models\/ggml-small.bin",
+  "auto_paste" : true,
+  "hotkey_mode" : "toggle",
+  "language" : "es"
 }

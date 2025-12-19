@@ -51,6 +51,7 @@ class FloatingIndicatorWindow: NSWindow {
     // Screen tracking
     private var screenCheckTimer: Timer?
     private var currentScreen: NSScreen?
+    private var lastVisibleFrame: NSRect?
     
     // Get the screen containing the mouse cursor
     private static func screenWithMouse() -> NSScreen {
@@ -75,58 +76,60 @@ class FloatingIndicatorWindow: NSWindow {
         
         if dockHeightAtBottom < 10 {
             // Dock is hidden or on the side - position at very bottom of screen
-            return fullFrame.origin.y + 8
+            return fullFrame.origin.y + 2
         } else {
             // Dock is visible at bottom - position above it
-            return visibleFrame.origin.y + 20
+            return visibleFrame.origin.y + 30
         }
     }
     
+    private func logDebug(_ message: String) {
+        let timestamp = Date().description
+        let logMessage = "[\(timestamp)] [Indicator] \(message)\n"
+        print(message)
+        let logURL = URL(fileURLWithPath: "/tmp/whisper_mac_startup.log")
+        if let data = logMessage.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logURL.path) {
+                if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+                    fileHandle.seekToEndOfFile()
+                    fileHandle.write(data)
+                    fileHandle.closeFile()
+                }
+            } else {
+                try? data.write(to: logURL)
+            }
+        }
+    }
+
     init() {
         indicatorView = IndicatorView(frame: NSRect(x: 0, y: 0, width: 36, height: 12))
+        super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        logDebug("Init started")
         
-        // Get screen where mouse is located
-        let screen = Self.screenWithMouse()
-        let fullScreenFrame = screen.frame
+        // Use screen with mouse cursor
+        let activeScreen = Self.screenWithMouse()
+        let fullFrame = activeScreen.frame
+        let visibleFrame = activeScreen.visibleFrame
         
-        // Position: bottom center of the screen with mouse, respecting dock visibility
-        // Position: bottom center of the screen with mouse, respecting dock visibility
-        var x = (fullScreenFrame.width - 36) / 2 + fullScreenFrame.origin.x
-        var y = Self.calculateBottomY(for: screen)
+        // Center X on the FULL screen width
+        let x = fullFrame.origin.x + (fullFrame.size.width - 36) / 2
+        // Y position based on dock visibility
+        let y = Self.calculateBottomY(for: activeScreen)
         
-        // Safety check: if coordinates are weird (e.g. negative or huge), reset to main screen center-bottom
-        if x < -10000 || x > 10000 || y < -10000 || y > 10000 {
-             print("⚠️ Weird coordinates detected (x:\(x), y:\(y)), resetting to main screen")
-             if let main = NSScreen.main {
-                 let mf = main.frame
-                 x = mf.midX - 18
-                 y = mf.minY + 50
-             } else {
-                 x = 100
-                 y = 100
-             }
-        }
-        
-        print("🚀 FloatingIndicator init frame: x=\(x), y=\(y)")
+        logDebug("🎯 Initial Position: screen=\(fullFrame), visible=\(visibleFrame), x=\(x), y=\(y)")
         
         let frame = NSRect(x: x, y: y, width: 36, height: 12)
+        self.setFrame(frame, display: true)
         
-        super.init(
-            contentRect: frame,
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
+        currentScreen = activeScreen
+        lastVisibleFrame = visibleFrame
         
-        currentScreen = screen
-        
-        // Window configuration
         self.isOpaque = false
         self.backgroundColor = .clear
-        self.level = .floating
-        self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary] // Added fullScreenAuxiliary
+        self.level = .statusBar
+        self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         self.hasShadow = true
-        self.isMovableByWindowBackground = false // Disable to allow click handling
+        self.isMovableByWindowBackground = false
         self.isReleasedWhenClosed = false
         self.hidesOnDeactivate = false
         self.acceptsMouseMovedEvents = true
@@ -134,7 +137,6 @@ class FloatingIndicatorWindow: NSWindow {
         
         self.contentView = indicatorView
         
-        // Set up click handlers
         indicatorView.onClicked = { [weak self] in
             guard let self = self else { return }
             if self.currentState == .idle || self.currentState == .hovering {
@@ -144,38 +146,44 @@ class FloatingIndicatorWindow: NSWindow {
             }
         }
         
-        // DEBUG: Force center position initially
-        if let mainScreen = NSScreen.main {
-            let centerRect = NSRect(
-                x: mainScreen.visibleFrame.midX - 18,
-                y: mainScreen.visibleFrame.midY - 6,
-                width: 36,
-                height: 12
-            )
-            self.setFrame(centerRect, display: true)
-            print("🚀 FORCED FRAME TO CENTER: \(centerRect)")
-        }
-        
-        // Timer to print frame repeatedly
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            print("🪟 Indicator Frame: \(self?.frame ?? .zero), Visible: \(self?.isVisible ?? false), Alpha: \(self?.alphaValue ?? 0)")
-        }
-        
-        // Start hover detection timer
         startHoverDetection()
-        
-        // Start screen change detection
         startScreenDetection()
         
-        // Load sounds asynchronously
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.loadSounds()
+        NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenParametersChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        
+        loadSounds()
+        
+        logDebug("Init complete")
+    }
+    
+    @objc private func screenParametersChanged() {
+        logDebug("Screen parameters/workspace changed Triggered")
+        // Delay significantly (0.5s) to allow OS to finish Dock/Layout animations
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.logDebug("   Executing delayed repositioning...")
+            let screen = self?.currentScreen ?? Self.screenWithMouse()
+            self?.moveToScreen(screen)
         }
     }
     
+    deinit {
+        logDebug("deinit called - cleaning up timers")
+        animationTimer?.invalidate()
+        animationTimer = nil
+        hoverCheckTimer?.invalidate()
+        hoverCheckTimer = nil
+        screenCheckTimer?.invalidate()
+        screenCheckTimer = nil
+        tooltipTimer?.invalidate()
+        tooltipTimer = nil
+        logDebug("deinit complete")
+    }
+    
     private func startScreenDetection() {
-        // Check which screen has the mouse every 200ms
-        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        // Check which screen has the mouse every 100ms
+        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.checkScreenChange()
         }
         RunLoop.main.add(screenCheckTimer!, forMode: .common)
@@ -264,27 +272,34 @@ class FloatingIndicatorWindow: NSWindow {
     
     private func checkScreenChange() {
         let newScreen = Self.screenWithMouse()
+        let newVisibleFrame = newScreen.visibleFrame
         
-        // Only move if the screen changed
-        if currentScreen != newScreen {
+        // Move if screen changed OR if visible frame on same screen changed (Dock toggle)
+        if currentScreen != newScreen || lastVisibleFrame != newVisibleFrame {
+            logDebug("♻️ Screen/Frame update required. ScreenChange=\(currentScreen != newScreen), FrameChange=\(lastVisibleFrame != newVisibleFrame)")
+            logDebug("   Current Visible: \(lastVisibleFrame ?? .zero) -> New Visible: \(newVisibleFrame)")
             currentScreen = newScreen
+            lastVisibleFrame = newVisibleFrame
             moveToScreen(newScreen)
         }
     }
     
     private func moveToScreen(_ screen: NSScreen) {
-        let fullScreenFrame = screen.frame
+        let fullFrame = screen.frame
         let currentWidth = self.frame.width
         let currentHeight = self.frame.height
         
-        let newX = (fullScreenFrame.width - currentWidth) / 2 + fullScreenFrame.origin.x
+        let newX = fullFrame.origin.x + (fullFrame.size.width - currentWidth) / 2
         let newY = Self.calculateBottomY(for: screen)
         
-        // Animate the move to the new screen
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            self.animator().setFrame(NSRect(x: newX, y: newY, width: currentWidth, height: currentHeight), display: true)
+        logDebug("🚀 [Move] Screen: \(fullFrame.origin.x),\(fullFrame.origin.y) | Visible Origin Y: \(screen.visibleFrame.origin.y)")
+        logDebug("   Target: (\(newX), \(newY)) | Actual Frame: \(self.frame)")
+        
+        self.setFrame(NSRect(x: newX, y: newY, width: currentWidth, height: currentHeight), display: true)
+        
+        // Direct property check to confirm move
+        if self.frame.origin.y != newY {
+            logDebug("   ⚠️ WARNING: Window origin Y (\(self.frame.origin.y)) did not match target (\(newY))!")
         }
     }
     
@@ -486,11 +501,14 @@ class FloatingIndicatorWindow: NSWindow {
     }
     
     private func animateToExpandedSize() {
-        let screen = currentScreen ?? Self.screenWithMouse()
-        let fullScreenFrame = screen.frame
-        let newX = (fullScreenFrame.width - expandedWidth) / 2 + fullScreenFrame.origin.x
+        let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first!
+        let fullFrame = screen.frame
+        let newX = fullFrame.origin.x + (fullFrame.size.width - expandedWidth) / 2
         let newY = Self.calculateBottomY(for: screen)
         
+        logDebug("📐 Animate to Expanded: \(newX), \(newY)")
+        
+        // Fast, snappy animation
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.08
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -499,13 +517,16 @@ class FloatingIndicatorWindow: NSWindow {
     }
     
     private func animateToIdleSize() {
-        let screen = currentScreen ?? Self.screenWithMouse()
-        let fullScreenFrame = screen.frame
-        let newX = (fullScreenFrame.width - idleWidth) / 2 + fullScreenFrame.origin.x
+        let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first!
+        let fullFrame = screen.frame
+        let newX = fullFrame.origin.x + (fullFrame.size.width - idleWidth) / 2
         let newY = Self.calculateBottomY(for: screen)
         
+        logDebug("📐 Animate to Idle: \(newX), \(newY)")
+        
+        // Fast, snappy animation
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
+            context.duration = 0.1
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(NSRect(x: newX, y: newY, width: idleWidth, height: idleHeight), display: true)
         }
