@@ -13,7 +13,7 @@ class ModelDownloader {
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             fatalError("Could not find Application Support directory")
         }
-        let modelsDir = appSupport.appendingPathComponent("WhisperMac/models")
+        let modelsDir = appSupport.appendingPathComponent("LocalWhisper/models")
         
         // Create directory if it doesn't exist
         try? FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)

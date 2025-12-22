@@ -53,6 +53,8 @@ class FloatingIndicatorWindow: NSWindow {
     private var currentScreen: NSScreen?
     private var lastVisibleFrame: NSRect?
     
+    private let loweredPosition: CGFloat = 12 // Height when dock is hidden (more breathing room)
+    
     // Get the screen containing the mouse cursor
     private static func screenWithMouse() -> NSScreen {
         let mouseLocation = NSEvent.mouseLocation
@@ -64,23 +66,15 @@ class FloatingIndicatorWindow: NSWindow {
         return NSScreen.main ?? NSScreen.screens.first!
     }
     
-    // Calculate the Y position based on dock visibility for a specific screen
-    private static func calculateBottomY(for screen: NSScreen) -> CGFloat {
-        print("🚀 calculateBottomY for screen: \(screen.frame)")
+    // Check if mouse is near the dock trigger zone (Removed - now fixed position)
+    private func isMouseNearDock() -> Bool {
+        return false
+    }
+    
+    // Calculate the Y position (Simplified - always fixed at bottom)
+    private func calculateBottomY(for screen: NSScreen, dockActive: Bool) -> CGFloat {
         let fullFrame = screen.frame
-        let visibleFrame = screen.visibleFrame
-        
-        // The dock takes space from the bottom when visible
-        // If visibleFrame.origin.y is close to fullFrame.origin.y, dock is hidden or on sides
-        let dockHeightAtBottom = visibleFrame.origin.y - fullFrame.origin.y
-        
-        if dockHeightAtBottom < 10 {
-            // Dock is hidden or on the side - position at very bottom of screen
-            return fullFrame.origin.y + 2
-        } else {
-            // Dock is visible at bottom - position above it
-            return visibleFrame.origin.y + 30
-        }
+        return fullFrame.origin.y + loweredPosition
     }
     
     private func logDebug(_ message: String) {
@@ -104,7 +98,7 @@ class FloatingIndicatorWindow: NSWindow {
     init() {
         indicatorView = IndicatorView(frame: NSRect(x: 0, y: 0, width: 36, height: 12))
         super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
-        logDebug("Init started")
+
         
         // Use screen with mouse cursor
         let activeScreen = Self.screenWithMouse()
@@ -113,10 +107,8 @@ class FloatingIndicatorWindow: NSWindow {
         
         // Center X on the FULL screen width
         let x = fullFrame.origin.x + (fullFrame.size.width - 36) / 2
-        // Y position based on dock visibility
-        let y = Self.calculateBottomY(for: activeScreen)
-        
-        logDebug("🎯 Initial Position: screen=\(fullFrame), visible=\(visibleFrame), x=\(x), y=\(y)")
+        // Y position is now fixed
+        let y = calculateBottomY(for: activeScreen, dockActive: false)
         
         let frame = NSRect(x: x, y: y, width: 36, height: 12)
         self.setFrame(frame, display: true)
@@ -155,21 +147,22 @@ class FloatingIndicatorWindow: NSWindow {
         
         loadSounds()
         
-        logDebug("Init complete")
+
     }
     
+    // MARK: - Window Configuration overrides
+    // These are CRITICAL to prevent stealing focus from the target app
+    override var canBecomeKey: Bool { return false }
+    override var canBecomeMain: Bool { return false }
+    
     @objc private func screenParametersChanged() {
-        logDebug("Screen parameters/workspace changed Triggered")
-        // Delay significantly (0.5s) to allow OS to finish Dock/Layout animations
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.logDebug("   Executing delayed repositioning...")
             let screen = self?.currentScreen ?? Self.screenWithMouse()
             self?.moveToScreen(screen)
         }
     }
     
     deinit {
-        logDebug("deinit called - cleaning up timers")
         animationTimer?.invalidate()
         animationTimer = nil
         hoverCheckTimer?.invalidate()
@@ -178,12 +171,11 @@ class FloatingIndicatorWindow: NSWindow {
         screenCheckTimer = nil
         tooltipTimer?.invalidate()
         tooltipTimer = nil
-        logDebug("deinit complete")
     }
     
     private func startScreenDetection() {
-        // Check which screen has the mouse every 100ms
-        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // Check which screen has the mouse every 50ms for responsive dock detection
+        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             self?.checkScreenChange()
         }
         RunLoop.main.add(screenCheckTimer!, forMode: .common)
@@ -244,7 +236,7 @@ class FloatingIndicatorWindow: NSWindow {
         
         toastWindow.isOpaque = false
         toastWindow.backgroundColor = .clear
-        toastWindow.level = .floating
+        toastWindow.level = .statusBar // Match indicator level to stay above dock
         toastWindow.hasShadow = true
         
         // Create label
@@ -262,7 +254,7 @@ class FloatingIndicatorWindow: NSWindow {
         bgView.addSubview(label)
         
         toastWindow.contentView = bgView
-        toastWindow.orderFront(nil)
+        toastWindow.orderFrontRegardless()
         
         // Auto-hide after 3 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
@@ -270,14 +262,24 @@ class FloatingIndicatorWindow: NSWindow {
         }
     }
     
+    // Helper to compare NSRect values properly
+    private func rectsAreEqual(_ r1: NSRect?, _ r2: NSRect) -> Bool {
+        guard let r1 = r1 else { return false }
+        return r1.origin.x == r2.origin.x &&
+               r1.origin.y == r2.origin.y &&
+               r1.size.width == r2.size.width &&
+               r1.size.height == r2.size.height
+    }
+    
     private func checkScreenChange() {
         let newScreen = Self.screenWithMouse()
         let newVisibleFrame = newScreen.visibleFrame
         
-        // Move if screen changed OR if visible frame on same screen changed (Dock toggle)
-        if currentScreen != newScreen || lastVisibleFrame != newVisibleFrame {
-            logDebug("♻️ Screen/Frame update required. ScreenChange=\(currentScreen != newScreen), FrameChange=\(lastVisibleFrame != newVisibleFrame)")
-            logDebug("   Current Visible: \(lastVisibleFrame ?? .zero) -> New Visible: \(newVisibleFrame)")
+        // Move if screen changed OR if visible frame on same screen changed
+        let screenChanged = currentScreen != newScreen
+        let frameChanged = !rectsAreEqual(lastVisibleFrame, newVisibleFrame)
+        
+        if screenChanged || frameChanged {
             currentScreen = newScreen
             lastVisibleFrame = newVisibleFrame
             moveToScreen(newScreen)
@@ -290,16 +292,15 @@ class FloatingIndicatorWindow: NSWindow {
         let currentHeight = self.frame.height
         
         let newX = fullFrame.origin.x + (fullFrame.size.width - currentWidth) / 2
-        let newY = Self.calculateBottomY(for: screen)
+        let newY = calculateBottomY(for: screen, dockActive: false)
         
-        logDebug("🚀 [Move] Screen: \(fullFrame.origin.x),\(fullFrame.origin.y) | Visible Origin Y: \(screen.visibleFrame.origin.y)")
-        logDebug("   Target: (\(newX), \(newY)) | Actual Frame: \(self.frame)")
+        let newFrame = NSRect(x: newX, y: newY, width: currentWidth, height: currentHeight)
         
-        self.setFrame(NSRect(x: newX, y: newY, width: currentWidth, height: currentHeight), display: true)
-        
-        // Direct property check to confirm move
-        if self.frame.origin.y != newY {
-            logDebug("   ⚠️ WARNING: Window origin Y (\(self.frame.origin.y)) did not match target (\(newY))!")
+        // Smooth position change
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.animator().setFrame(newFrame, display: true)
         }
     }
     
@@ -373,17 +374,17 @@ class FloatingIndicatorWindow: NSWindow {
         let statusText: String
         switch currentState {
         case .idle, .hovering:
-            statusText = "Listo"
+            statusText = "Ready"
         case .recording:
-            statusText = "Grabando..."
+            statusText = "Recording..."
         case .transcribing:
-            statusText = "Transcribiendo..."
+            statusText = "Transcribing..."
         }
         showTooltip(text: statusText)
     }
     
     private func showHelpTooltip() {
-        let helpText = "Presiona \(hotkeyDisplayString) para pasar tu voz a texto!"
+        let helpText = "Press \(hotkeyDisplayString) to transcribe your voice to text!"
         showTooltip(text: helpText)
     }
     
@@ -419,7 +420,7 @@ class FloatingIndicatorWindow: NSWindow {
         
         tooltipWindow?.isOpaque = false
         tooltipWindow?.backgroundColor = .clear
-        tooltipWindow?.level = .floating
+        tooltipWindow?.level = .statusBar // Match indicator level to stay above dock
         tooltipWindow?.hasShadow = true
         
         // Create background view
@@ -428,7 +429,7 @@ class FloatingIndicatorWindow: NSWindow {
         bgView.addSubview(label)
         
         tooltipWindow?.contentView = bgView
-        tooltipWindow?.orderFront(nil)
+        tooltipWindow?.orderFrontRegardless()
     }
     
     private func hideTooltip() {
@@ -504,9 +505,7 @@ class FloatingIndicatorWindow: NSWindow {
         let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first!
         let fullFrame = screen.frame
         let newX = fullFrame.origin.x + (fullFrame.size.width - expandedWidth) / 2
-        let newY = Self.calculateBottomY(for: screen)
-        
-        logDebug("📐 Animate to Expanded: \(newX), \(newY)")
+        let newY = calculateBottomY(for: screen, dockActive: false)
         
         // Fast, snappy animation
         NSAnimationContext.runAnimationGroup { context in
@@ -520,9 +519,7 @@ class FloatingIndicatorWindow: NSWindow {
         let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first!
         let fullFrame = screen.frame
         let newX = fullFrame.origin.x + (fullFrame.size.width - idleWidth) / 2
-        let newY = Self.calculateBottomY(for: screen)
-        
-        logDebug("📐 Animate to Idle: \(newX), \(newY)")
+        let newY = calculateBottomY(for: screen, dockActive: false)
         
         // Fast, snappy animation
         NSAnimationContext.runAnimationGroup { context in
@@ -623,41 +620,41 @@ class IndicatorView: NSView {
     }
     
     func animateWaveform() {
-        // Center-weighted animation logic
-        let centerIndex = waveformLevels.count / 2
-        let maxDist = CGFloat(centerIndex)
+        let baseLevel = CGFloat(audioLevel)
+        let time = CACurrentMediaTime()
         
+        // If no audio, keep bars at minimal static height - NO movement
+        if baseLevel < 0.05 {
+            for i in 0..<waveformLevels.count {
+                let current = waveformLevels[i]
+                let target: CGFloat = 0.1
+                waveformLevels[i] = current + (target - current) * 0.15
+            }
+            needsDisplay = true
+            return
+        }
+        
+        // Audio is playing - energetic reactive animation
         for i in 0..<waveformLevels.count {
-            let baseLevel = CGFloat(audioLevel)
+            // Time-varying sensitivity for unpredictability
+            let basePhase = CGFloat(i) * 1.5
+            let wave1 = sin(time * 1.5 + basePhase) * 0.2
+            let wave2 = sin(time * 3.2 + basePhase * 0.6) * 0.15
+            let timeFactor = wave1 + wave2
+            let sensitivity = 0.7 + timeFactor
             
-            // Calculate distance from center (0.0 at center, 1.0 at edges)
-            let distFromCenter = abs(CGFloat(i - centerIndex)) / maxDist
+            // Random variation for energy
+            let randomOffset = CGFloat.random(in: -0.1...0.15)
             
-            // Sensitivity drops off towards edges
-            // Center bars react fully, edges react less but not as drastically (flatter curve)
-            // Improved curve: (1 - x^2) for smoother falloff
-            let positionSensitivity = 1.0 - (distFromCenter * distFromCenter * 0.8)
-            
-            // Generate a target
-            // More variation range for livelier animation
-            let randomVariation = CGFloat.random(in: -0.1...0.25)
-            
-            // Apply sensitivity to the active part of the signal
-            // Scale up the variation based on volume
-            let variationComponent = (randomVariation * baseLevel)
-            
-            // Base height + Volume impact + Randomness
-            // Ensure minimum visibility (0.15) and cap at 1.0
-            var target = (baseLevel * 0.8 * positionSensitivity) + variationComponent + 0.15
-            target = max(0.15, min(1.0, target))
+            // Strong audio response - amplify the audio level
+            var target = baseLevel * 1.3 * sensitivity + randomOffset + 0.1
+            target = max(0.1, min(0.85, target))
             
             targetWaveformLevels[i] = target
             
-            // Lerp current towards target
-            // Asymmetric smoothing: Attack fast (0.3), Decay slow (0.15)
+            // Faster attack (0.35) for snappy response, moderate decay (0.15)
             let current = waveformLevels[i]
-            let smoothFactor: CGFloat = target > current ? 0.3 : 0.15
-            
+            let smoothFactor: CGFloat = target > current ? 0.35 : 0.15
             waveformLevels[i] = current + (target - current) * smoothFactor
         }
         needsDisplay = true
@@ -677,7 +674,7 @@ class IndicatorView: NSView {
         let bounds = self.bounds
         
         // Draw background pill
-        let bgColor = NSColor(white: 0.08, alpha: 0.9)
+        let bgColor = NSColor(red: 0.02, green: 0.02, blue: 0.02, alpha: 0.95)
         let cornerRadius = bounds.height / 2
         let bgPath = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: cornerRadius, yRadius: cornerRadius)
         
@@ -722,7 +719,7 @@ class IndicatorView: NSView {
         let availableWidth = bounds.width - xIconSpace
         let startX = (availableWidth - totalBarsWidth) / 2
         
-        let maxBarHeight = bounds.height - 6
+        let maxBarHeight = bounds.height - 10 // Shorter bars to avoid hitting edges
         
         for i in 0..<barCount {
             let x = startX + CGFloat(i) * (barWidth + barSpacing)
@@ -731,7 +728,8 @@ class IndicatorView: NSView {
             
             let barRect = NSRect(x: x, y: y, width: barWidth, height: barHeight)
             
-            NSColor.white.withAlphaComponent(0.9).setFill()
+            // White waveform bars
+            NSColor.white.setFill()
             let barPath = NSBezierPath(roundedRect: barRect, xRadius: barWidth/2, yRadius: barWidth/2)
             barPath.fill()
         }
@@ -778,7 +776,8 @@ class IndicatorView: NSView {
         bgCircle.lineWidth = lineWidth
         bgCircle.stroke()
         
-        NSColor.white.setStroke()
+        let activePurple = NSColor(red: 0.55, green: 0.18, blue: 1.0, alpha: 1.0)
+        activePurple.setStroke()
         let arc = NSBezierPath()
         arc.appendArc(withCenter: center, radius: radius, startAngle: spinnerAngle, endAngle: spinnerAngle + 90)
         arc.lineWidth = lineWidth
@@ -799,7 +798,8 @@ class IndicatorView: NSView {
             let x = startX + CGFloat(i) * (dotSize + dotSpacing)
             let dotRect = NSRect(x: x, y: y, width: dotSize, height: dotSize)
             
-            NSColor.white.withAlphaComponent(0.6).setFill()
+            // White dots
+            NSColor.white.withAlphaComponent(0.8).setFill()
             let dotPath = NSBezierPath(ovalIn: dotRect)
             dotPath.fill()
         }

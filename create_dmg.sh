@@ -1,6 +1,6 @@
 #!/bin/bash
 
-APP_NAME="Local Whisper"
+APP_NAME="LocalWhisper"
 VOL_NAME="${APP_NAME} Installer"
 DMG_FINAL="build/LocalWhisper.dmg"
 STAGING_DIR="build/dmg_temp"
@@ -18,6 +18,9 @@ mkdir -p "$STAGING_DIR"
 
 # Copy App
 cp -R "build/${APP_NAME}.app" "$STAGING_DIR/"
+
+# Remove quarantine and extended attributes to prevent Gatekeeper issues
+xattr -cr "$STAGING_DIR/${APP_NAME}.app"
 
 # Create /Applications symlink
 ln -s /Applications "$STAGING_DIR/Applications"

@@ -48,6 +48,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Audio level timer
     var audioLevelTimer: Timer?
     
+    // Store last active application for focus restoration
+    var lastActiveApplication: NSRunningApplication?
+    
     // Config
     var config: AppConfig = .defaultConfig
     let appDir: String
@@ -67,7 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 logDebug("FATAL: Could not find Application Support directory")
                 fatalError("Could not find Application Support directory")
             }
-            let appConfigDir = appSupport.appendingPathComponent("WhisperMac")
+            let appConfigDir = appSupport.appendingPathComponent("LocalWhisper")
             
             // Create directory if it doesn't exist
             do {
@@ -192,14 +195,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func resetApp() {
         let alert = NSAlert()
-        alert.messageText = "¿Resetear WhisperMac?"
-        alert.informativeText = "Esto eliminará toda la configuración y el modelo descargado. La aplicación se cerrará y deberás configurarla de nuevo."
+        alert.messageText = "Reset LocalWhisper?"
+        alert.informativeText = "This will remove all configuration and the downloaded model. The application will close and you must configure it again."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Resetear y Salir")
-        alert.addButton(withTitle: "Cancelar")
+        alert.addButton(withTitle: "Reset and Quit")
+        alert.addButton(withTitle: "Cancel")
         
         if alert.runModal() == .alertFirstButtonReturn {
-            print("🧹 Reseteando aplicación...")
+            print("🧹 Resetting application...")
             
             // Clear UserDefaults
             if let bundleID = Bundle.main.bundleIdentifier {
@@ -209,7 +212,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Delete Application Support folder
             let fileManager = FileManager.default
             if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-                let appConfigDir = appSupport.appendingPathComponent("WhisperMac")
+                let appConfigDir = appSupport.appendingPathComponent("LocalWhisper")
                 try? fileManager.removeItem(at: appConfigDir)
             }
             
@@ -283,7 +286,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         floatingIndicator.onCancelRecording = { [weak self] in
             self?.cancelRecording()
         }
-        floatingIndicator.orderFront(nil)
+        floatingIndicator.orderFrontRegardless()
         logDebug("🚀 FloatingIndicatorWindow created and shown")
         
         // Create status bar item
@@ -310,8 +313,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logDebug("⌨️ Hotkey monitors set up")
         
         logDebug("✅ startApp() completed successfully")
-        print("WhisperMac Swift iniciado.")
-        print("Modelo: \(modelPath)")
+        print("LocalWhisper Swift started.")
+        print("Model: \(modelPath)")
         print("Hotkey: \(config.hotkey.displayString) (\(config.hotkeyMode.displayName))")
         print("🎧 Hotkey keyCode: \(config.hotkey.keyCode), modifiers: \(config.hotkey.modifiers)")
     }
@@ -319,27 +322,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateMenu() {
         let menu = NSMenu()
         
-        let statusMenuItem = NSMenuItem(title: "Estado: Listo", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Status: Ready", action: nil, keyEquivalent: "")
         statusMenuItem.tag = 100
         menu.addItem(statusMenuItem)
         menu.addItem(NSMenuItem.separator())
         
-        menu.addItem(NSMenuItem(title: "Idioma: \(config.language)", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Language: \(config.language)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Hotkey: \(config.hotkey.displayString)", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Modo: \(config.hotkeyMode.displayName)", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Mode: \(config.hotkeyMode.displayName)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         
-        let prefsItem = NSMenuItem(title: "Preferencias...", action: #selector(openSettings), keyEquivalent: ",")
+        let prefsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
         prefsItem.target = self
         menu.addItem(prefsItem)
         
-        let resetItem = NSMenuItem(title: "Resetear aplicación...", action: #selector(resetApp), keyEquivalent: "")
+        let resetItem = NSMenuItem(title: "Reset application...", action: #selector(resetApp), keyEquivalent: "")
         resetItem.target = self
         menu.addItem(resetItem)
         
         menu.addItem(NSMenuItem.separator())
         
-        let quitItem = NSMenuItem(title: "Salir", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         
@@ -348,7 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func updateStatusMenuItem(_ text: String) {
         if let item = statusItem.menu?.item(withTag: 100) {
-            item.title = "Estado: \(text)"
+            item.title = "Status: \(text)"
         }
     }
     
@@ -378,7 +381,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !trusted {
             print("⚠️ WARNING: Hotkeys will NOT work without Accessibility permission!")
             print("   Please go to System Settings > Privacy & Security > Accessibility")
-            print("   and enable 'Local Whisper' or 'WhisperMac'")
+            print("   and enable 'LocalWhisper'")
             
             // Open accessibility settings
             DispatchQueue.main.async {
@@ -528,6 +531,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func startRecording() {
         guard !isRecording else { return }
+        
+        // CRITICAL: Save the currently active application BEFORE recording starts
+        // This is needed so we can restore focus for auto-paste after transcription
+        lastActiveApplication = NSWorkspace.shared.frontmostApplication
+        print("📍 Saved active app: \(lastActiveApplication?.localizedName ?? "none")")
+        
         isRecording = true
         
         DispatchQueue.main.async {
@@ -535,7 +544,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 image.isTemplate = true
                 self.statusItem.button?.image = image
             }
-            self.updateStatusMenuItem("Grabando...")
+            self.updateStatusMenuItem("Recording...")
             self.floatingIndicator.setState(.recording)
         }
         
@@ -561,9 +570,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Start audio level monitoring
             startAudioLevelMonitoring()
             
-            print("Grabando...")
+            print("Recording...")
         } catch {
-            print("Error al grabar: \(error)")
+            print("Error recording: \(error)")
             isRecording = false
             if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
                 image.isTemplate = true
@@ -607,11 +616,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 image.isTemplate = true
                 self.statusItem.button?.image = image
             }
-            self.updateStatusMenuItem("Transcribiendo...")
+            self.updateStatusMenuItem("Transcribing...")
             self.floatingIndicator.setState(.transcribing)
         }
         
-        print("Grabación terminada.")
+        print("Recording finished.")
         
         // Transcribe
         transcribe()
@@ -641,7 +650,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 image.isTemplate = true
                 self.statusItem.button?.image = image
             }
-            self.updateStatusMenuItem("Listo")
+            self.updateStatusMenuItem("Ready")
             self.floatingIndicator.setState(.idle, silent: true)
         }
     }
@@ -691,19 +700,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        log("🚀 Iniciando transcripción...")
-        log("📁 Archivo de audio: \(audioURL.path)")
-        log("⚙️ Idioma: \(config.language)")
-        log("🧠 Modelo: \(modelPath)")
+        log("🚀 Starting transcription...")
+        log("📁 Audio file: \(audioURL.path)")
+        log("⚙️ Language: \(config.language)")
+        log("🧠 Model: \(modelPath)")
 
         guard let whisperPath = getWhisperCliPath() else {
-            log("❌ Error: No se encontró whisper-cli")
+            log("❌ Error: whisper-cli not found")
             DispatchQueue.main.async {
                 if let image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Error") {
                     image.isTemplate = true
                     self.statusItem.button?.image = image
                 }
-                self.updateStatusMenuItem("Error: Falta binario")
+                self.updateStatusMenuItem("Error: Missing binary")
                 self.floatingIndicator.setState(.idle)
             }
             return
@@ -718,18 +727,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 log("🎙️ Audio file size: \(size) bytes")
             }
             
+            // Optimal thread count: use ALL cores for maximum quality
+            let totalCores = ProcessInfo.processInfo.processorCount
+            log("⚡ Using \(totalCores) threads for maximum quality")
+            
+            // Build language-specific prompt for better accuracy
+            let qualityPrompt: String
+            if config.language == "es" {
+                qualityPrompt = "Esta es una transcripción de alta calidad en español, con puntuación correcta y mayúsculas apropiadas."
+            } else if config.language == "en" {
+                qualityPrompt = "This is a high-quality transcription in English, with correct punctuation and proper capitalization."
+            } else {
+                qualityPrompt = "High-quality transcription with correct punctuation."
+            }
+            
             let cmd = [
                 whisperPath,
                 "-m", modelPath,
                 "-f", audioURL.path,
-                "-nt",          // No timestamps
-                "-t", "8",      // Threads
-                "-bs", "2",     // Beam size
-                "-bo", "2",     // Best of
+                "-nt",                          // No timestamps
+                "-t", String(totalCores),       // Use ALL cores for quality
+                "-bs", "8",                     // Beam size: MAXIMUM quality (default 5)
+                "-bo", "8",                     // Best of: more candidates = better selection
+                "-nth", "0.6",                  // No-speech threshold: default, balanced
+                "-et", "2.4",                   // Entropy threshold: default for reliability
+                "-lpt", "-0.5",                 // Log probability threshold: stricter quality filter
+                "--prompt", qualityPrompt,      // Language-specific context
                 "-l", config.language
             ]
             
-            log("🏃 Ejecutando: \(cmd.joined(separator: " "))")
+            log("🏃 Running: \(cmd.joined(separator: " "))")
             
             let process = Process()
             process.executableURL = URL(fileURLWithPath: whisperPath)
@@ -767,7 +794,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 DispatchQueue.main.async {
                     if !text.isEmpty {
-                        log("✅ Transcripción exitosa: \(text)")
+                        log("✅ Transcription successful: \(text)")
                         
                         // Copy to clipboard
                         NSPasteboard.general.clearContents()
@@ -775,14 +802,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         
                         // Auto-paste if enabled
                         if self.config.autoPaste {
+                            // Restore focus to original app before pasting
+                            if let app = self.lastActiveApplication {
+                                app.activate(options: [.activateIgnoringOtherApps])
+                            }
                             self.simulatePaste()
                         }
                         
-                        self.updateStatusMenuItem("Listo")
+                        self.updateStatusMenuItem("Ready")
                         self.floatingIndicator.setState(.idle)
                     } else {
-                        log("❓ No se detectó texto en la transcripción")
-                        self.updateStatusMenuItem("Sin texto")
+                        log("❓ No text detected in transcription")
+                        self.updateStatusMenuItem("No text")
                         self.floatingIndicator.setState(.idle)
                     }
                     
@@ -795,7 +826,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 try? FileManager.default.removeItem(at: audioURL)
                 
             } catch {
-                log("💀 Error fatal en transcripción: \(error)")
+                log("💀 Fatal error in transcription: \(error)")
                 DispatchQueue.main.async {
                     if let image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "Error") {
                          image.isTemplate = true
@@ -847,5 +878,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular) // Switch to regular for debugging visibility
+app.setActivationPolicy(.accessory) // Menu bar app: never steal focus, no dock icon
 app.run()

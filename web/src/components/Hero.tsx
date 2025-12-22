@@ -10,8 +10,9 @@ const Hero = () => {
       <section className="min-h-screen flex items-center justify-center px-6">
         <div className="max-w-2xl mx-auto text-center space-y-12">
           <div className="space-y-2">
-            <div className="flex justify-center mb-6">
-              <img src="/icon.png" alt="Local Whisper Logo" className="w-24 h-24" />
+            <div className="flex justify-center mb-6 relative group">
+              <div className="absolute inset-0 bg-[#8B5CF6]/20 blur-3xl rounded-full scale-110 opacity-50 group-hover:opacity-100 transition-opacity duration-500" />
+              <img src="/icon.png" alt="LocalWhisper Logo" className="w-24 h-24 relative z-10 drop-shadow-2xl" />
             </div>
             <h1 className="text-6xl md:text-8xl font-light tracking-tight lowercase">
               local whisper
@@ -31,7 +32,7 @@ const Hero = () => {
             <Button
               size="lg"
               variant="outline"
-              className="border-2 border-foreground hover:bg-foreground hover:text-background font-light px-12 py-6 text-lg transition-all duration-300 min-w-[200px]"
+              className="border-2 border-[#8B5CF6] text-[#8B5CF6] hover:bg-[#8B5CF6] hover:text-white font-light px-12 py-6 text-lg transition-all duration-300 min-w-[200px] shadow-[0_0_20px_rgba(139,92,246,0.15)] hover:shadow-[0_0_25px_rgba(139,92,246,0.3)]"
               onClick={() => setShowModal(true)}
             >
               install
@@ -40,7 +41,7 @@ const Hero = () => {
             <Button
               size="lg"
               variant="ghost"
-              className="font-light px-12 py-6 text-lg transition-all duration-300 min-w-[200px]"
+              className="font-light px-12 py-6 text-lg transition-all duration-300 min-w-[200px] hover:text-[#8B5CF6] hover:bg-[#8B5CF6]/5"
               onClick={() => window.open('https://github.com/nicorosaless/whipermac', '_blank')}
             >
               github
@@ -69,7 +70,7 @@ const Hero = () => {
             </button>
 
             <div className="mb-8">
-              <h2 className="text-3xl font-light tracking-tight mb-2">Install Local Whisper</h2>
+              <h2 className="text-3xl font-light tracking-tight mb-2">Install LocalWhisper</h2>
               <p className="text-muted-foreground font-light">
                 Choose your preferred installation method for macOS
               </p>
@@ -100,21 +101,21 @@ const Hero = () => {
                       <span className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-bold border border-primary/20">2</span>
                       <div className="space-y-1">
                         <p className="text-base font-medium">Drag to Applications</p>
-                        <p className="text-sm text-muted-foreground leading-relaxed">Open the .dmg and drag Local Whisper to your Applications folder.</p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">Open the .dmg and drag LocalWhisper to your Applications folder.</p>
                       </div>
                     </div>
 
                     <div className="flex gap-4 p-4 rounded-xl bg-amber-500/5 border border-amber-500/20">
                       <span className="flex-shrink-0 w-8 h-8 rounded-full bg-amber-500/10 text-amber-600 flex items-center justify-center text-sm font-bold border border-amber-500/20">3</span>
                       <div className="space-y-2">
-                        <p className="text-base font-medium text-amber-600">Security Bypass Is Required</p>
-                        <p className="text-sm text-muted-foreground leading-relaxed">macOS will block the app initially. You MUST do this:</p>
+                        <p className="text-base font-medium text-amber-600">First Launch (Required)</p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">macOS blocks apps from unknown developers. To open:</p>
                         <ul className="text-sm text-muted-foreground space-y-2 ml-1 border-l-2 border-amber-500/20 pl-4 pt-1 mt-2">
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Try to open the app (it will fail)</li>
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Go to <strong>System Settings</strong></li>
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Open <strong>Privacy & Security</strong></li>
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Scroll down and click <strong>"Open Anyway"</strong></li>
+                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span><strong>Right-click</strong> (or Control+click) on LocalWhisper.app</li>
+                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Select <strong>"Open"</strong> from the menu</li>
+                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Click <strong>"Open"</strong> in the dialog that appears</li>
                         </ul>
+                        <p className="text-xs text-muted-foreground/70 mt-2 italic">This is only needed the first time you open the app.</p>
                       </div>
                     </div>
                   </div>

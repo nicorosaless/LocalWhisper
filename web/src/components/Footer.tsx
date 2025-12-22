@@ -9,7 +9,7 @@ const Footer = () => {
             <div className="w-8 h-8 rounded-lg bg-gradient-accent flex items-center justify-center">
               <span className="text-lg font-bold text-background">L</span>
             </div>
-            <span className="text-xl font-bold">Local Whisper</span>
+            <span className="text-xl font-bold">LocalWhisper</span>
           </div>
 
           <div className="flex items-center gap-6">
@@ -25,7 +25,7 @@ const Footer = () => {
           </div>
 
           <p className="text-sm text-muted-foreground">
-            © 2025 Local Whisper. All rights reserved.
+            © 2025 LocalWhisper. All rights reserved.
           </p>
         </div>
       </div>

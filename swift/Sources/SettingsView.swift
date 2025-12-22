@@ -8,8 +8,8 @@ enum HotkeyMode: String, CaseIterable, Codable {
     
     var displayName: String {
         switch self {
-        case .pushToTalk: return "Push to Talk (mantener)"
-        case .toggle: return "Toggle (pulsar)"
+        case .pushToTalk: return "Push to Talk (hold)"
+        case .toggle: return "Toggle (press)"
         }
     }
 }
@@ -18,7 +18,7 @@ enum HotkeyMode: String, CaseIterable, Codable {
 struct HotkeyConfig: Codable, Equatable {
     var keyCode: UInt16
     var modifiers: [String]
-    var keyCharacter: String?  // Store the actual character for display
+    var keyCharacter: String?
     
     static let defaultConfig = HotkeyConfig(keyCode: 49, modifiers: ["cmd", "shift"], keyCharacter: "Space")
     
@@ -29,7 +29,6 @@ struct HotkeyConfig: Codable, Equatable {
         if modifiers.contains("alt") { parts.append("⌥") }
         if modifiers.contains("shift") { parts.append("⇧") }
         
-        // Use stored character if available, otherwise fall back to keyCode mapping
         if let char = keyCharacter, !char.isEmpty {
             parts.append(char)
         } else {
@@ -78,7 +77,7 @@ struct AppConfig: Codable {
         language: "es",
         hotkey: .defaultConfig,
         hotkeyMode: .pushToTalk,
-        autoPaste: true,
+        autoPaste: false,
         modelPath: "models/ggml-small.bin"
     )
     
@@ -97,18 +96,18 @@ struct Language: Identifiable, Hashable {
     let name: String
     
     static let all: [Language] = [
-        Language(id: "auto", name: "Auto-detectar"),
-        Language(id: "es", name: "Español"),
+        Language(id: "auto", name: "Auto-detect"),
+        Language(id: "es", name: "Spanish"),
         Language(id: "en", name: "English"),
-        Language(id: "fr", name: "Français"),
-        Language(id: "de", name: "Deutsch"),
-        Language(id: "it", name: "Italiano"),
-        Language(id: "pt", name: "Português"),
-        Language(id: "zh", name: "中文"),
-        Language(id: "ja", name: "日本語"),
-        Language(id: "ko", name: "한국어"),
-        Language(id: "ru", name: "Русский"),
-        Language(id: "ar", name: "العربية"),
+        Language(id: "fr", name: "French"),
+        Language(id: "de", name: "German"),
+        Language(id: "it", name: "Italian"),
+        Language(id: "pt", name: "Portuguese"),
+        Language(id: "zh", name: "Chinese"),
+        Language(id: "ja", name: "Japanese"),
+        Language(id: "ko", name: "Korean"),
+        Language(id: "ru", name: "Russian"),
+        Language(id: "ar", name: "Arabic"),
     ]
 }
 
@@ -181,15 +180,13 @@ class HotkeyRecorderNSView: NSView {
     
     weak var coordinator: HotkeyRecorderView.Coordinator?
     
-    // Event monitors
     private var localMonitor: Any?
     private var clickMonitor: Any?
     private var globalClickMonitor: Any?
     
-    // UI Elements
     private let label: NSTextField = {
         let label = NSTextField(labelWithString: "")
-        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = .white
         label.alignment = .center
         label.drawsBackground = false
@@ -217,7 +214,7 @@ class HotkeyRecorderNSView: NSView {
     
     private func setupUI() {
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = 6
         
         addSubview(label)
         NSLayoutConstraint.activate([
@@ -231,21 +228,19 @@ class HotkeyRecorderNSView: NSView {
     }
     
     private func updateAppearance() {
-        // Update label text
         if isRecordingHotkey {
-            label.stringValue = "Presiona una tecla..."
+            label.stringValue = "Press a key..."
+            label.textColor = .white.withAlphaComponent(0.5)
         } else {
             label.stringValue = currentHotkey.displayString
+            label.textColor = .white
         }
-        
-        // Trigger background redraw
         needsDisplay = true
     }
     
     private func startMonitoring() {
         stopMonitoring()
         
-        // Monitor for key presses to record the hotkey
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self = self, self.isRecordingHotkey else { return event }
             
@@ -255,16 +250,12 @@ class HotkeyRecorderNSView: NSView {
             if event.modifierFlags.contains(.option) { modifiers.append("alt") }
             if event.modifierFlags.contains(.shift) { modifiers.append("shift") }
             
-            // Escape cancels recording
             if event.keyCode == 53 {
                 self.coordinator?.cancelRecording()
                 return nil
             }
             
-            // Get the actual character from the keyboard
             var keyChar: String? = nil
-            
-            // Special keys that don't have printable characters
             switch event.keyCode {
             case 49: keyChar = "Space"
             case 36: keyChar = "↵"
@@ -287,18 +278,15 @@ class HotkeyRecorderNSView: NSView {
             case 125: keyChar = "↓"
             case 126: keyChar = "↑"
             default:
-                // Get the actual character from the event (respects keyboard layout)
                 if let chars = event.charactersIgnoringModifiers, !chars.isEmpty {
                     keyChar = chars.uppercased()
                 }
             }
             
-            // Record the hotkey with the actual character
             self.coordinator?.hotkeyRecorded(keyCode: event.keyCode, modifiers: modifiers, keyCharacter: keyChar)
-            return nil // Consume the event
+            return nil
         }
         
-        // 1. Local Monitor: Clicks *inside* the application that are *outside* our view
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, self.isRecordingHotkey else { return event }
             
@@ -309,13 +297,11 @@ class HotkeyRecorderNSView: NSView {
             return event
         }
         
-        // 2. Global Monitor: Clicks *outside* the application window
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, self.isRecordingHotkey else { return }
             DispatchQueue.main.async { self.coordinator?.cancelRecording() }
         }
         
-        // 3. Window Resignation: If the window loses focus (e.g. cmd+tab)
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: self.window, queue: .main) { [weak self] _ in
              guard let self = self, self.isRecordingHotkey else { return }
              self.coordinator?.cancelRecording()
@@ -348,24 +334,22 @@ class HotkeyRecorderNSView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         
-        // Dark theme background
+        // Minimal Vercel style - dark background with subtle border
         let bgColor = isRecordingHotkey 
-            ? NSColor(red: 0.4, green: 0.2, blue: 0.6, alpha: 0.4)
-            : NSColor(red: 0.15, green: 0.15, blue: 0.2, alpha: 1.0)
+            ? NSColor(white: 0.15, alpha: 1.0)
+            : NSColor(white: 0.08, alpha: 1.0)
         bgColor.setFill()
         
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
         path.fill()
         
-        // Border
+        // Subtle border
         let borderColor = isRecordingHotkey 
-            ? NSColor(red: 0.7, green: 0.4, blue: 1.0, alpha: 1.0) 
-            : NSColor(white: 0.3, alpha: 1.0)
+            ? NSColor.white.withAlphaComponent(0.3)
+            : NSColor.white.withAlphaComponent(0.1)
         borderColor.setStroke()
-        path.lineWidth = 2
+        path.lineWidth = 1
         path.stroke()
-        
-        // Text is handled by NSTextField (label)
     }
     
     override func mouseDown(with event: NSEvent) {
@@ -376,69 +360,41 @@ class HotkeyRecorderNSView: NSView {
     }
 }
 
-// MARK: - Settings View
-// MARK: - Settings View
+// MARK: - Settings View (Vercel/ShadCN Style)
 struct SettingsView: View {
     @State var config: AppConfig
     @State private var isRecordingHotkey = false
     var onSave: (AppConfig) -> Void
     var onCancel: () -> Void
     
-    // Theme colors
-    private let themePurple = Color(red: 0.6, green: 0.2, blue: 0.9)
-    private let themePurpleLight = Color(red: 0.7, green: 0.4, blue: 1.0)
-    private let themeDark = Color(red: 0.08, green: 0.08, blue: 0.12)
-    private let themeDarkSecondary = Color(red: 0.12, green: 0.12, blue: 0.18)
-    
-    // Button States
-    @State private var isHoveringSave = false
-    @State private var isHoveringCancel = false
-    
     var body: some View {
         ZStack {
-            // Background gradient (matching Onboarding)
-            LinearGradient(
-                colors: [themeDark, Color(red: 0.1, green: 0.05, blue: 0.2)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            // Pure black background
+            Color(red: 0.03, green: 0.03, blue: 0.03)
+                .ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Header
-                HStack(spacing: 16) {
-                    ZStack {
-                        // Header icon glow
-                        Circle()
-                            .fill(LinearGradient(colors: [themePurple.opacity(0.3), themePurpleLight.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .frame(width: 48, height: 48)
-                            .blur(radius: 12)
-                        
-                        Image(systemName: "waveform")
-                            .font(.system(size: 24))
-                            .foregroundStyle(LinearGradient(colors: [themePurple, themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    }
-                    
-                    Text("Preferencias")
-                        .font(.title2.bold())
+                // Minimal header
+                HStack {
+                    Text("Settings")
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.white)
-                    
                     Spacer()
                 }
-                .padding(.horizontal, 30)
-                .padding(.top, 30)
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
                 .padding(.bottom, 20)
                 
                 // Settings content
                 ScrollView {
-                    VStack(spacing: 24) {
+                    VStack(spacing: 20) {
                         // Language Section
-                        settingsSection(title: "Transcripción", icon: "text.bubble.fill") {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Idioma")
-                                    .font(.subheadline)
-                                    .foregroundColor(.white.opacity(0.7))
-                                
+                        settingsSection(title: "Language") {
+                            HStack {
+                                Text("Transcription language")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.white.opacity(0.5))
+                                Spacer()
                                 Picker("", selection: $config.language) {
                                     ForEach(Language.all) { lang in
                                         Text(lang.name).tag(lang.id)
@@ -446,158 +402,134 @@ struct SettingsView: View {
                                 }
                                 .pickerStyle(.menu)
                                 .labelsHidden()
-                                .tint(themePurpleLight)
+                                .tint(.white)
                             }
                         }
                         
                         // Hotkey Section
-                        settingsSection(title: "Atajo de teclado", icon: "keyboard.fill") {
-                            VStack(spacing: 20) {
+                        settingsSection(title: "Shortcut") {
+                            VStack(spacing: 16) {
                                 HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
+                                    VStack(alignment: .leading, spacing: 2) {
                                         Text("Hotkey")
-                                            .font(.subheadline)
-                                            .foregroundColor(.white.opacity(0.7))
-                                        Text("Pulsa para grabar nuevo atajo")
-                                            .font(.caption)
-                                            .foregroundColor(.white.opacity(0.4))
+                                            .font(.system(size: 13))
+                                            .foregroundColor(.white.opacity(0.5))
+                                        Text("Click to record")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.white.opacity(0.3))
                                     }
                                     Spacer()
                                     HotkeyRecorderView(hotkey: $config.hotkey, isRecording: $isRecordingHotkey)
-                                        .frame(width: 180, height: 44)
+                                        .frame(width: 140, height: 36)
                                 }
                                 
-                                Divider().background(Color.white.opacity(0.1))
+                                Divider()
+                                    .background(Color.white.opacity(0.08))
                                 
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Text("Modo de activación")
-                                        .font(.subheadline)
-                                        .foregroundColor(.white.opacity(0.7))
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Mode")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.white.opacity(0.5))
                                     
-                                    HStack(spacing: 12) {
-                                        modeButton(mode: .pushToTalk, title: "Mantener", icon: "hand.raised.fill")
-                                        modeButton(mode: .toggle, title: "Pulsar", icon: "power")
+                                    HStack(spacing: 8) {
+                                        modeButton(mode: .pushToTalk, title: "Push to Talk", subtitle: "Hold to record")
+                                        modeButton(mode: .toggle, title: "Toggle", subtitle: "Press to start/stop")
                                     }
                                 }
                             }
                         }
-                        
-                        // Options Section
-                        settingsSection(title: "Opciones", icon: "gearshape.fill") {
-                            Toggle(isOn: $config.autoPaste) {
-                                HStack {
-                                    Image(systemName: "doc.on.clipboard")
-                                        .foregroundColor(themePurpleLight)
-                                    Text("Auto-pegar transcripción")
-                                        .foregroundColor(.white)
-                                }
-                            }
-                            .toggleStyle(SwitchToggleStyle(tint: themePurple))
-                        }
                     }
-                    .padding(.horizontal, 30)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
                 }
                 
                 // Footer Buttons
                 VStack(spacing: 0) {
-                    Divider().background(Color.white.opacity(0.1))
+                    Divider()
+                        .background(Color.white.opacity(0.08))
                     
-                    HStack(spacing: 16) {
+                    HStack(spacing: 12) {
                         Button(action: { onCancel() }) {
-                            Text("Cancelar")
-                                .font(.headline)
-                                .foregroundColor(.white.opacity(0.7))
-                                .frame(height: 44)
-                                .padding(.horizontal, 24)
-                                .background(Color.white.opacity(0.05))
-                                .cornerRadius(22)
+                            Text("Cancel")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.6))
+                                .frame(height: 36)
+                                .padding(.horizontal, 16)
+                                .background(Color.white.opacity(0.06))
+                                .cornerRadius(6)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                )
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape)
-                        .onHover { isHoveringCancel = $0 }
-                        .scaleEffect(isHoveringCancel ? 1.02 : 1.0)
-                        .animation(.easeInOut(duration: 0.2), value: isHoveringCancel)
                         
                         Spacer()
                         
                         Button(action: { onSave(config) }) {
-                            HStack(spacing: 8) {
-                                Text("Guardar cambios")
+                            HStack(spacing: 6) {
+                                Text("Save")
                                 Image(systemName: "checkmark")
+                                    .font(.system(size: 11, weight: .semibold))
                             }
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(height: 44)
-                            .padding(.horizontal, 28)
-                            .background(
-                                LinearGradient(colors: [themePurple, themePurpleLight], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .cornerRadius(22)
-                            .shadow(color: themePurple.opacity(0.5), radius: 10, x: 0, y: 4)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.black)
+                            .frame(height: 36)
+                            .padding(.horizontal, 20)
+                            .background(Color.white)
+                            .cornerRadius(6)
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.return)
-                        .onHover { isHoveringSave = $0 }
-                        .scaleEffect(isHoveringSave ? 1.02 : 1.0)
-                        .animation(.easeInOut(duration: 0.2), value: isHoveringSave)
                     }
-                    .padding(30)
+                    .padding(24)
                 }
             }
         }
-        .frame(width: 500, height: 700)
+        .frame(width: 420, height: 480)
     }
     
-    private func settingsSection<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .foregroundStyle(LinearGradient(colors: [themePurple, themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .font(.system(size: 16, weight: .semibold))
-                Text(title)
-                    .font(.headline)
-                    .foregroundColor(.white)
-            }
-            .padding(.bottom, 4)
+    private func settingsSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.4))
+                .textCase(.uppercase)
+                .tracking(0.5)
             
             content()
         }
-        .padding(24)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.03)) // Glassmorphism base
-        .cornerRadius(20)
+        .background(Color.white.opacity(0.02))
+        .cornerRadius(8)
         .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(LinearGradient(colors: [.white.opacity(0.1), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
         )
     }
     
-    private func modeButton(mode: HotkeyMode, title: String, icon: String) -> some View {
+    private func modeButton(mode: HotkeyMode, title: String, subtitle: String) -> some View {
         Button(action: { config.hotkeyMode = mode }) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.title3)
+            VStack(spacing: 3) {
                 Text(title)
-                    .font(.caption.bold())
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(config.hotkeyMode == mode ? .black : .white.opacity(0.6))
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundColor(config.hotkeyMode == mode ? .black.opacity(0.5) : .white.opacity(0.3))
             }
-            .foregroundColor(config.hotkeyMode == mode ? .white : .white.opacity(0.5))
             .frame(maxWidth: .infinity)
-            .frame(height: 70)
-            .background(
-                config.hotkeyMode == mode 
-                    ? LinearGradient(colors: [themePurple, themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    : LinearGradient(colors: [Color.white.opacity(0.05), Color.white.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-            .cornerRadius(16)
+            .frame(height: 52)
+            .background(config.hotkeyMode == mode ? Color.white : Color.white.opacity(0.04))
+            .cornerRadius(6)
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(config.hotkeyMode == mode ? Color.white.opacity(0.2) : Color.clear, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(config.hotkeyMode == mode ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
             )
-            .shadow(color: config.hotkeyMode == mode ? themePurple.opacity(0.3) : .clear, radius: 8, x: 0, y: 4)
         }
         .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.2), value: config.hotkeyMode)
     }
 }
 
@@ -605,23 +537,22 @@ struct SettingsView: View {
 class SettingsWindowController: NSWindowController {
     convenience init(config: AppConfig, onSave: @escaping (AppConfig) -> Void) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 625),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "Preferencias"
+        window.title = "Settings"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.center()
-        window.backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1.0)
+        window.backgroundColor = NSColor(red: 0.03, green: 0.03, blue: 0.03, alpha: 1.0)
         
         self.init(window: window)
         
         let settingsView = SettingsView(
             config: config,
             onSave: { [weak self] newConfig in
-                print("Settings: Guardando configuración...")
                 onSave(newConfig)
                 self?.window?.close()
             },

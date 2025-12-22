@@ -2,12 +2,12 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
-// MARK: - Theme Colors
+// MARK: - Theme Colors (Vercel/ShadCN Style - Black & White)
 extension Color {
-    static let themePurple = Color(red: 0.6, green: 0.2, blue: 0.9)
-    static let themePurpleLight = Color(red: 0.7, green: 0.4, blue: 1.0)
-    static let themeDark = Color(red: 0.08, green: 0.08, blue: 0.12)
-    static let themeDarkSecondary = Color(red: 0.12, green: 0.12, blue: 0.18)
+    static let themePurple = Color.white
+    static let themePurpleLight = Color.white.opacity(0.8)
+    static let themeDark = Color(red: 0.03, green: 0.03, blue: 0.03)
+    static let themeDarkSecondary = Color(red: 0.08, green: 0.08, blue: 0.08)
 }
 
 // MARK: - Onboarding State
@@ -30,20 +30,16 @@ struct OnboardingView: View {
     @State private var accessibilityGranted = false
     @State private var isRecordingHotkey = false
     @State private var onboardingDoneTriggered = false
-    @State private var localHotkeyMode: HotkeyMode = .pushToTalk  // Local state for mode
-    @State private var localHotkeyConfig: HotkeyConfig = .defaultConfig  // Local state for hotkey
+    @State private var localHotkeyMode: HotkeyMode = .pushToTalk
+    @State private var localHotkeyConfig: HotkeyConfig = .defaultConfig
     
     var initialHotkeyConfig: HotkeyConfig
     var initialHotkeyMode: HotkeyMode
-    var onComplete: (HotkeyConfig, HotkeyMode) -> Void  // Pass both back on complete
+    var onComplete: (HotkeyConfig, HotkeyMode) -> Void
     
-    // Gradient background
-    private var backgroundGradient: LinearGradient {
-        LinearGradient(
-            colors: [Color.themeDark, Color(red: 0.1, green: 0.05, blue: 0.2)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    // Clean black background
+    private var backgroundGradient: some View {
+        Color.themeDark
     }
     
     var body: some View {
@@ -53,14 +49,15 @@ struct OnboardingView: View {
                 .ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Progress indicator
-                HStack(spacing: 12) {
+                // Progress indicator - minimal dots
+                HStack(spacing: 8) {
                     ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
-                        Capsule()
+                        Circle()
                             .fill(step.rawValue <= currentStep.rawValue 
-                                ? LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .leading, endPoint: .trailing)
-                                : LinearGradient(colors: [Color.white.opacity(0.2), Color.white.opacity(0.2)], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: step.rawValue == currentStep.rawValue ? 24 : 10, height: 10)
+                                ? Color.white 
+                                : Color.white.opacity(0.2))
+                            .frame(width: step.rawValue == currentStep.rawValue ? 8 : 6, 
+                                   height: step.rawValue == currentStep.rawValue ? 8 : 6)
                             .animation(.easeInOut(duration: 0.2), value: currentStep)
                     }
                 }
@@ -87,7 +84,7 @@ struct OnboardingView: View {
                 
                 Spacer()
                 
-                // Navigation buttons
+                // Navigation buttons - minimal style
                 HStack {
                     if currentStep != .permissions && currentStep != .done {
                         Button(action: {
@@ -99,11 +96,10 @@ struct OnboardingView: View {
                         }) {
                             HStack(spacing: 6) {
                                 Image(systemName: "chevron.left")
-                                Text("Atrás")
+                                Text("Back")
                             }
-                            .foregroundColor(.white.opacity(0.7))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
+                            .foregroundColor(.white.opacity(0.5))
+                            .font(.system(size: 14, weight: .medium))
                         }
                         .buttonStyle(.plain)
                     }
@@ -119,18 +115,15 @@ struct OnboardingView: View {
                             }
                         }) {
                             HStack(spacing: 8) {
-                                Text("Empezar")
+                                Text("Get Started")
                                 Image(systemName: "arrow.right")
                             }
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 28)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 24)
                             .padding(.vertical, 12)
-                            .background(
-                                LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .cornerRadius(25)
-                            .shadow(color: .themePurple.opacity(0.5), radius: 10, x: 0, y: 4)
+                            .background(Color.white)
+                            .cornerRadius(8)
                         }
                         .buttonStyle(.plain)
                         .disabled(onboardingDoneTriggered)
@@ -144,17 +137,12 @@ struct OnboardingView: View {
                                 Text(nextButtonText)
                                 Image(systemName: "arrow.right")
                             }
-                            .font(.headline)
-                            .foregroundColor(canAdvance ? .white : .white.opacity(0.5))
-                            .padding(.horizontal, 28)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(canAdvance ? .black : .white.opacity(0.3))
+                            .padding(.horizontal, 24)
                             .padding(.vertical, 12)
-                            .background(
-                                canAdvance 
-                                    ? LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .leading, endPoint: .trailing)
-                                    : LinearGradient(colors: [.gray.opacity(0.3), .gray.opacity(0.3)], startPoint: .leading, endPoint: .trailing)
-                            )
-                            .cornerRadius(25)
-                            .shadow(color: canAdvance ? .themePurple.opacity(0.5) : .clear, radius: 10, x: 0, y: 4)
+                            .background(canAdvance ? Color.white : Color.white.opacity(0.1))
+                            .cornerRadius(8)
                         }
                         .buttonStyle(.plain)
                         .disabled(!canAdvance)
@@ -176,11 +164,11 @@ struct OnboardingView: View {
     private var nextButtonText: String {
         switch currentStep {
         case .permissions:
-            return "Continuar"
+            return "Continue"
         case .modelDownload:
-            return downloadComplete ? "Continuar" : "Descargar"
+            return downloadComplete ? "Continue" : "Download"
         default:
-            return "Continuar"
+            return "Continue"
         }
     }
     
@@ -189,14 +177,13 @@ struct OnboardingView: View {
         case .permissions:
             return microphoneGranted && accessibilityGranted
         case .modelDownload:
-            return downloadComplete || ModelDownloader.shared.isModelDownloaded()
+            return true
         default:
             return true
         }
     }
     
     private func advanceStep() {
-        // Special handling for model download step
         if currentStep == .modelDownload && !downloadComplete && !ModelDownloader.shared.isModelDownloaded() {
             startDownload()
             return
@@ -209,82 +196,61 @@ struct OnboardingView: View {
     
     // MARK: - Permissions View
     private var permissionsView: some View {
-        VStack(spacing: 24) {
-            // Icon with glow
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.themePurple.opacity(0.3), .themePurpleLight.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 100, height: 100)
-                    .blur(radius: 20)
-                
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 50))
-                    .foregroundStyle(LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing))
-            }
-            
-            Text("Permisos necesarios")
-                .font(.title.bold())
+        VStack(spacing: 32) {
+            // Minimal icon
+            Image(systemName: "lock.shield")
+                .font(.system(size: 48, weight: .light))
                 .foregroundColor(.white)
             
-            Text("WhisperMac necesita acceso para funcionar correctamente.")
-                .multilineTextAlignment(.center)
-                .foregroundColor(.white.opacity(0.7))
-                .padding(.horizontal, 40)
+            VStack(spacing: 8) {
+                Text("Permissions")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(.white)
+                
+                Text("LocalWhisper needs access to function correctly.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.5))
+            }
             
-            VStack(spacing: 16) {
+            VStack(spacing: 12) {
                 permissionRow(
-                    icon: "mic.fill",
-                    title: "Micrófono",
-                    subtitle: "Para capturar tu voz",
+                    icon: "mic",
+                    title: "Microphone",
+                    subtitle: "To capture your voice",
                     granted: microphoneGranted,
                     action: { requestMicrophoneAccess() }
                 )
                 
                 permissionRow(
                     icon: "accessibility",
-                    title: "Accesibilidad",
-                    subtitle: "Para atajos globales",
+                    title: "Accessibility",
+                    subtitle: "For global shortcuts",
                     granted: accessibilityGranted,
                     action: { openAccessibilitySettings() },
                     showSkip: true
                 )
             }
-            .padding(.horizontal, 30)
-            
-            if !microphoneGranted || !accessibilityGranted {
-                Button(action: { checkPermissions() }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("Verificar permisos")
-                    }
-                    .font(.caption)
-                    .foregroundColor(.themePurpleLight)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 8)
-            }
+            .padding(.horizontal, 40)
         }
     }
     
     private func permissionRow(icon: String, title: String, subtitle: String, granted: Bool, action: @escaping () -> Void, showSkip: Bool = false) -> some View {
         HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(granted ? Color.green.opacity(0.2) : Color.themePurple.opacity(0.2))
-                    .frame(width: 44, height: 44)
-                
-                Image(systemName: granted ? "checkmark" : icon)
-                    .font(.system(size: 18))
-                    .foregroundColor(granted ? .green : .themePurpleLight)
-            }
+            // Icon
+            Image(systemName: granted ? "checkmark" : icon)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(granted ? .green : .white.opacity(0.6))
+                .frame(width: 40, height: 40)
+                .background(granted ? Color.green.opacity(0.1) : Color.white.opacity(0.05))
+                .cornerRadius(8)
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.white)
                 Text(subtitle)
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.4))
             }
             
             Spacer()
@@ -292,21 +258,21 @@ struct OnboardingView: View {
             if !granted {
                 VStack(spacing: 4) {
                     Button(action: action) {
-                        Text("Permitir")
-                            .font(.caption.bold())
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 14)
+                        Text("Allow")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(Color.themePurple)
-                            .cornerRadius(15)
+                            .background(Color.white)
+                            .cornerRadius(6)
                     }
                     .buttonStyle(.plain)
                     
                     if showSkip {
                         Button(action: { accessibilityGranted = true }) {
-                            Text("Saltar")
+                            Text("Skip")
                                 .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.white.opacity(0.3))
                         }
                         .buttonStyle(.plain)
                     }
@@ -314,191 +280,180 @@ struct OnboardingView: View {
             }
         }
         .padding(16)
-        .background(Color.themeDarkSecondary)
-        .cornerRadius(16)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
     }
     
     // MARK: - Language View
     private var languageView: some View {
-        VStack(spacing: 24) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.themePurple.opacity(0.3), .themePurpleLight.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 100, height: 100)
-                    .blur(radius: 20)
-                
-                Image(systemName: "globe")
-                    .font(.system(size: 50))
-                    .foregroundStyle(LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing))
-            }
-            
-            Text("Selecciona tu idioma")
-                .font(.title.bold())
+        VStack(spacing: 32) {
+            Image(systemName: "globe")
+                .font(.system(size: 48, weight: .light))
                 .foregroundColor(.white)
             
-            Text("WhisperMac transcribirá en el idioma seleccionado.")
-                .multilineTextAlignment(.center)
-                .foregroundColor(.white.opacity(0.7))
-                .padding(.horizontal, 40)
-            
-            VStack(spacing: 12) {
-                languageButton(code: "es", name: "Español", flag: "🇪🇸")
-                languageButton(code: "en", name: "English", flag: "🇺🇸")
+            VStack(spacing: 8) {
+                Text("Language")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(.white)
+                
+                Text("Select your transcription language.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.5))
             }
-            .padding(.horizontal, 30)
+            
+            VStack(spacing: 4) {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        languageButton(code: "auto", name: "Auto-detect", flag: "✨")
+                        languageButton(code: "en", name: "English", flag: "🇺🇸")
+                        languageButton(code: "es", name: "Spanish", flag: "🇪🇸")
+                        languageButton(code: "fr", name: "French", flag: "🇫🇷")
+                        languageButton(code: "de", name: "German", flag: "🇩🇪")
+                        languageButton(code: "it", name: "Italian", flag: "🇮🇹")
+                        languageButton(code: "pt", name: "Portuguese", flag: "🇵🇹")
+                    }
+                    .padding(8)
+                }
+                .frame(height: 240)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+            }
+            .padding(.horizontal, 50)
         }
     }
     
     private func languageButton(code: String, name: String, flag: String) -> some View {
         Button(action: { selectedLanguage = code }) {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Text(flag)
-                    .font(.system(size: 32))
+                    .font(.system(size: 24))
                 Text(name)
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.white)
                 Spacer()
                 if selectedLanguage == code {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(.themePurpleLight)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
                 }
             }
-            .padding(20)
-            .background(
-                selectedLanguage == code 
-                    ? LinearGradient(colors: [.themePurple.opacity(0.3), .themePurpleLight.opacity(0.1)], startPoint: .leading, endPoint: .trailing)
-                    : LinearGradient(colors: [Color.themeDarkSecondary, Color.themeDarkSecondary], startPoint: .leading, endPoint: .trailing)
-            )
-            .cornerRadius(16)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(selectedLanguage == code ? Color.themePurple : Color.clear, lineWidth: 2)
-            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(selectedLanguage == code ? Color.white.opacity(0.1) : Color.clear)
+            .cornerRadius(8)
         }
         .buttonStyle(.plain)
     }
     
     // MARK: - Model Download View
     private var modelDownloadView: some View {
-        VStack(spacing: 24) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.themePurple.opacity(0.3), .themePurpleLight.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 100, height: 100)
-                    .blur(radius: 20)
+        VStack(spacing: 32) {
+            Image(systemName: downloadComplete ? "checkmark.circle" : "arrow.down.circle")
+                .font(.system(size: 48, weight: .light))
+                .foregroundColor(downloadComplete ? .green : .white)
+            
+            VStack(spacing: 8) {
+                Text("AI Model")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(.white)
                 
-                Image(systemName: downloadComplete ? "checkmark.circle.fill" : "arrow.down.circle.fill")
-                    .font(.system(size: 50))
-                    .foregroundStyle(downloadComplete 
-                        ? LinearGradient(colors: [.green, .green], startPoint: .topLeading, endPoint: .bottomTrailing)
-                        : LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text("Download the Whisper model (465 MB).\nThis is only done once.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
             }
-            
-            Text("Descargar modelo de IA")
-                .font(.title.bold())
-                .foregroundColor(.white)
-            
-            Text("Se descargará el modelo Whisper (465 MB).\nEsto solo se hace una vez.")
-                .multilineTextAlignment(.center)
-                .foregroundColor(.white.opacity(0.7))
-                .padding(.horizontal, 40)
             
             if isDownloading {
                 VStack(spacing: 12) {
+                    // Minimal progress bar
                     ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: 4)
                             .fill(Color.white.opacity(0.1))
-                            .frame(height: 8)
+                            .frame(height: 4)
                         
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: max(0, CGFloat(downloadProgress) * 300), height: 8)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white)
+                            .frame(width: max(0, CGFloat(downloadProgress) * 280), height: 4)
                     }
-                    .frame(width: 300)
+                    .frame(width: 280)
                     
-                    Text("\(Int(downloadProgress * 100))% descargando...")
-                        .font(.caption)
-                        .foregroundColor(.themePurpleLight)
+                    Text("\(Int(downloadProgress * 100))%")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
                 }
-                .padding(.top, 10)
             } else if downloadComplete {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Modelo listo")
-                        .foregroundColor(.green)
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Ready")
                 }
-                .font(.headline)
-                .padding(.top, 10)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.green)
             }
         }
     }
     
     // MARK: - Hotkey View
     private var hotkeyView: some View {
-        VStack(spacing: 24) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.themePurple.opacity(0.3), .themePurpleLight.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 100, height: 100)
-                    .blur(radius: 20)
-                
-                Image(systemName: "keyboard.fill")
-                    .font(.system(size: 50))
-                    .foregroundStyle(LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing))
-            }
-            
-            Text("Configura tu atajo")
-                .font(.title.bold())
+        VStack(spacing: 32) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 48, weight: .light))
                 .foregroundColor(.white)
             
-            Text("Este atajo activará la transcripción de voz.")
-                .multilineTextAlignment(.center)
-                .foregroundColor(.white.opacity(0.7))
-                .padding(.horizontal, 40)
+            VStack(spacing: 8) {
+                Text("Shortcut")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(.white)
+                
+                Text("Configure your activation shortcut.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.5))
+            }
             
-            VStack(spacing: 20) {
+            VStack(spacing: 24) {
                 HotkeyRecorderView(hotkey: $localHotkeyConfig, isRecording: $isRecordingHotkey)
                     .frame(width: 180, height: 44)
                 
-                VStack(spacing: 8) {
-                    Text("Modo de activación")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.5))
+                VStack(spacing: 12) {
+                    Text("Mode")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
                     
-                    HStack(spacing: 12) {
-                        modeButton(mode: .pushToTalk, title: "Mantener", icon: "hand.raised.fill")
-                        modeButton(mode: .toggle, title: "Pulsar", icon: "power")
+                    HStack(spacing: 8) {
+                        modeButton(mode: .pushToTalk, title: "Push to Talk", subtitle: "Hold to record")
+                        modeButton(mode: .toggle, title: "Toggle", subtitle: "Press to start/stop")
                     }
                 }
             }
-            .padding(.horizontal, 30)
         }
     }
     
-    private func modeButton(mode: HotkeyMode, title: String, icon: String) -> some View {
+    private func modeButton(mode: HotkeyMode, title: String, subtitle: String) -> some View {
         Button(action: { 
-            print("Mode button tapped: \(mode)")
             localHotkeyMode = mode 
         }) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.title2)
+            VStack(spacing: 4) {
                 Text(title)
-                    .font(.caption.bold())
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(localHotkeyMode == mode ? .black : .white.opacity(0.6))
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundColor(localHotkeyMode == mode ? .black.opacity(0.6) : .white.opacity(0.3))
             }
-            .foregroundColor(localHotkeyMode == mode ? .white : .white.opacity(0.5))
-            .frame(width: 120, height: 80)
-            .background(
-                localHotkeyMode == mode 
-                    ? LinearGradient(colors: [.themePurple, .themePurpleLight], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    : LinearGradient(colors: [Color.themeDarkSecondary, Color.themeDarkSecondary], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-            .cornerRadius(12)
+            .frame(width: 140, height: 60)
+            .background(localHotkeyMode == mode ? Color.white : Color.white.opacity(0.05))
+            .cornerRadius(8)
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(localHotkeyMode == mode ? Color.themePurpleLight : Color.clear, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(localHotkeyMode == mode ? Color.clear : Color.white.opacity(0.1), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -506,54 +461,59 @@ struct OnboardingView: View {
     
     // MARK: - Done View
     private var doneView: some View {
-        VStack(spacing: 24) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.green.opacity(0.3), .green.opacity(0.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 120, height: 120)
-                    .blur(radius: 25)
-                
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 70))
-                    .foregroundStyle(LinearGradient(colors: [.green, Color(red: 0.4, green: 0.9, blue: 0.5)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            }
-            
-            Text("¡Todo listo!")
-                .font(.largeTitle.bold())
-                .foregroundColor(.white)
+        VStack(spacing: 32) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 56, weight: .light))
+                .foregroundColor(.green)
             
             VStack(spacing: 8) {
-                Text("Pulsa")
-                    .foregroundColor(.white.opacity(0.7))
+                Text("Ready")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundColor(.white)
+                
+                Text("You're all set to start transcribing.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            
+            VStack(spacing: 8) {
+                Text("Press")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.4))
                 
                 Text(localHotkeyConfig.displayString)
-                    .font(.title2.bold())
-                    .foregroundColor(.themePurpleLight)
-                    .padding(.horizontal, 20)
+                    .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(Color.themePurple.opacity(0.2))
-                    .cornerRadius(10)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(8)
                 
-                Text("para empezar a transcribir")
-                    .foregroundColor(.white.opacity(0.7))
+                Text("to start")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.4))
             }
         }
     }
     
     // MARK: - Helpers
     private func checkPermissions() {
-        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        let accStatus = AXIsProcessTrusted()
-        
-        DispatchQueue.main.async {
-            self.microphoneGranted = (micStatus == .authorized)
-            self.accessibilityGranted = accStatus
+        DispatchQueue.global(qos: .userInitiated).async {
+            let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+            let accStatus = AXIsProcessTrusted()
+            
+            DispatchQueue.main.async {
+                self.microphoneGranted = (micStatus == .authorized)
+                self.accessibilityGranted = accStatus
+            }
         }
     }
     
     private func requestMicrophoneAccess() {
-        AVCaptureDevice.requestAccess(for: .audio) { _ in
-            self.checkPermissions()
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            DispatchQueue.main.async {
+                self.microphoneGranted = granted
+            }
         }
     }
     
@@ -561,9 +521,24 @@ struct OnboardingView: View {
 
     private func startPermissionPolling() {
         pollingTimer?.invalidate()
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            checkPermissions()
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+            DispatchQueue.main.async {
+                let accStatus = AXIsProcessTrusted()
+                let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                
+                if self.accessibilityGranted != accStatus {
+                    self.accessibilityGranted = accStatus
+                }
+                if self.microphoneGranted != (micStatus == .authorized) {
+                    self.microphoneGranted = (micStatus == .authorized)
+                }
+            }
         }
+    }
+    
+    private func stopPermissionPolling() {
+        pollingTimer?.invalidate()
+        pollingTimer = nil
     }
 
     private func openAccessibilitySettings() {
@@ -605,6 +580,10 @@ class OnboardingWindowController {
     var onComplete: ((HotkeyConfig, HotkeyMode) -> Void)?
     
     func show(initialHotkeyConfig: HotkeyConfig, initialHotkeyMode: HotkeyMode) {
+        print("🎯 OnboardingWindowController.show() called")
+        
+        close()
+        
         let onboardingView = OnboardingView(
             initialHotkeyConfig: initialHotkeyConfig,
             initialHotkeyMode: initialHotkeyMode,
@@ -616,23 +595,36 @@ class OnboardingWindowController {
         
         hostingView = NSHostingView(rootView: onboardingView)
         
-        // 25% larger window size (550 * 1.25 = 687)
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 690, height: 690),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 580),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         
-        window?.titlebarAppearsTransparent = true
-        window?.titleVisibility = .hidden
-        window?.backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1.0)
+        guard let window = window else { return }
         
-        window?.title = "Local Whisper"
-        window?.contentView = hostingView
-        window?.center()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.backgroundColor = NSColor(red: 0.03, green: 0.03, blue: 0.03, alpha: 1.0)
+        window.title = "LocalWhisper"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            window.level = .normal
+        }
     }
     
     func close() {

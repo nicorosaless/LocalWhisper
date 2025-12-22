@@ -3,7 +3,7 @@
 # Local Whisper - Easy Installer
 # This script removes macOS quarantine attributes to allow the app to run
 
-APP_NAME="Local Whisper"
+APP_NAME="LocalWhisper"
 DMG_PATH="$HOME/Downloads/LocalWhisper.dmg"
 APP_PATH="/Applications/${APP_NAME}.app"
 MOUNT_POINT="/Volumes/${APP_NAME} Installer"
