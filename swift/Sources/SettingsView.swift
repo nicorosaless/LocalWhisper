@@ -1,6 +1,25 @@
 import SwiftUI
 import Carbon.HIToolbox
 
+// MARK: - Paste Method
+enum PasteMethod: String, CaseIterable, Codable {
+    case auto        // Try all strategies
+    case cgEvent     // CGEvent only
+    case appleScript // AppleScript only
+    case accessibility // AX API only
+    case typing      // Character simulation
+    
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto (Recommended)"
+        case .cgEvent: return "System Events"
+        case .appleScript: return "AppleScript"
+        case .accessibility: return "Accessibility API"
+        case .typing: return "Type Simulation"
+        }
+    }
+}
+
 // MARK: - Hotkey Mode
 enum HotkeyMode: String, CaseIterable, Codable {
     case pushToTalk = "push_to_talk"
@@ -72,13 +91,17 @@ struct AppConfig: Codable {
     var hotkeyMode: HotkeyMode
     var autoPaste: Bool
     var modelPath: String
+    var pasteDelay: Int // milliseconds, delay after app activation before paste
+    var preferredPasteMethod: PasteMethod
     
     static let defaultConfig = AppConfig(
         language: "es",
-        hotkey: .defaultConfig,
-        hotkeyMode: .pushToTalk,
-        autoPaste: false,
-        modelPath: "models/ggml-small.bin"
+        hotkey: HotkeyConfig(keyCode: 7, modifiers: ["cmd", "shift"], keyCharacter: "X"),
+        hotkeyMode: .toggle,
+        autoPaste: true,
+        modelPath: "models/ggml-small.bin",
+        pasteDelay: 200,
+        preferredPasteMethod: .auto
     )
     
     enum CodingKeys: String, CodingKey {
@@ -87,6 +110,8 @@ struct AppConfig: Codable {
         case hotkeyMode = "hotkey_mode"
         case autoPaste = "auto_paste"
         case modelPath = "model_path"
+        case pasteDelay = "paste_delay"
+        case preferredPasteMethod = "preferred_paste_method"
     }
 }
 
@@ -290,6 +315,7 @@ class HotkeyRecorderNSView: NSView {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, self.isRecordingHotkey else { return event }
             
+            let ourBundleID = Bundle.main.bundleIdentifier ?? "com.nicorosaless.LocalWhisper"
             let pointInView = self.convert(event.locationInWindow, from: nil)
             if !self.bounds.contains(pointInView) {
                 DispatchQueue.main.async { self.coordinator?.cancelRecording() }

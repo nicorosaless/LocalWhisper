@@ -10,7 +10,7 @@ enum IndicatorState {
 }
 
 // MARK: - Floating Indicator Window
-class FloatingIndicatorWindow: NSWindow {
+class FloatingIndicatorWindow: NSPanel {
     
     private let indicatorView: IndicatorView
     private var currentState: IndicatorState = .idle
@@ -26,6 +26,14 @@ class FloatingIndicatorWindow: NSWindow {
     var onStartRecording: (() -> Void)?
     var onStopRecording: (() -> Void)?
     var onCancelRecording: (() -> Void)?
+    
+    // The app we are currently 'locked' to for pasting
+    var lockedTargetAppName: String? {
+        didSet {
+            // If we are recording, updating the tooltip might be too noisy, 
+            // but we want to show it when starting.
+        }
+    }
     
     // Animation
     private var animationTimer: Timer?
@@ -97,7 +105,8 @@ class FloatingIndicatorWindow: NSWindow {
 
     init() {
         indicatorView = IndicatorView(frame: NSRect(x: 0, y: 0, width: 36, height: 12))
-        super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        // Use .nonactivatingPanel to prevent focus stealing on click
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 
         
         // Use screen with mouse cursor
@@ -116,9 +125,12 @@ class FloatingIndicatorWindow: NSWindow {
         currentScreen = activeScreen
         lastVisibleFrame = visibleFrame
         
+        self.isFloatingPanel = true
+        self.becomesKeyOnlyIfNeeded = true
+        
         self.isOpaque = false
         self.backgroundColor = .clear
-        self.level = .statusBar
+        self.level = .floating // slightly higher than standard status bar to be always top
         self.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         self.hasShadow = true
         self.isMovableByWindowBackground = false
@@ -376,7 +388,11 @@ class FloatingIndicatorWindow: NSWindow {
         case .idle, .hovering:
             statusText = "Ready"
         case .recording:
-            statusText = "Recording..."
+            if let target = lockedTargetAppName {
+                statusText = "Recording for \(target)..."
+            } else {
+                statusText = "Recording..."
+            }
         case .transcribing:
             statusText = "Transcribing..."
         }

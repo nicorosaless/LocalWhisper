@@ -1,13 +1,16 @@
 {
-  "language" : "es",
-  "hotkey_mode" : "toggle",
   "hotkey" : {
-    "keyCode" : 97,
     "modifiers" : [
-
+      "cmd",
+      "shift"
     ],
-    "keyCharacter" : "F6"
+    "keyCode" : 7,
+    "keyCharacter" : "X"
   },
   "model_path" : "\/Users\/testnico\/Library\/Application Support\/LocalWhisper\/models\/ggml-small.bin",
-  "auto_paste" : true
+  "hotkey_mode" : "toggle",
+  "language" : "es",
+  "preferred_paste_method" : "auto",
+  "auto_paste" : true,
+  "paste_delay" : 200
 }

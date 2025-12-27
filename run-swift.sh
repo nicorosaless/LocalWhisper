@@ -11,4 +11,4 @@ echo "Compilando..."
 cd swift && swift build -c release && cd ..
 
 # Run from the main directory so paths work
-./swift/.build/release/WhisperMac
+./swift/.build/release/LocalWhisper
