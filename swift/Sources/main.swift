@@ -978,16 +978,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         post(vUp)
         post(cmdUp)
         
-        // Fallback: Also try a global post if we think we might have missed it
-        // This covers cases where PID-targeted events are ignored by Electron sub-views
-        if targetPID != nil {
-            usleep(50000)
-            logDebug("🔄 Posting secondary global Cmd+V for insurance...")
-            vDown.post(tap: .cghidEventTap)
-            usleep(10000)
-            vUp.post(tap: .cghidEventTap)
-        }
-        
         logDebug("✅ CGEvent paste sequence completed")
         return true
     }
