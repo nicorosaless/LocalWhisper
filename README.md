@@ -1,46 +1,27 @@
-# WhisperMac 🎤
+# Local Whisper
 
-> ⚠️ **PROYECTO EN DESARROLLO** - Este proyecto está en fase experimental.
+Local speech-to-text for macOS using whisper.cpp.
 
-Speech-to-text local para macOS usando whisper.cpp. Similar a Wispr Flow pero completamente local y gratuito.
+## Features
 
-## Estado actual
+- Push-to-talk with Cmd+Shift+Space
+- Local transcription
+- Auto-paste to cursor
+- Native Swift application
 
-- ✅ Push-to-talk con Cmd+Shift+Space
-- ✅ Transcripción con whisper.cpp
-- ✅ Auto-paste al cursor
-- ✅ Versión Swift (estable, recomendada)
-- ⚠️ Versión Python (inestable, segfaults con Metal)
+## Usage
 
-## Requisitos
+Run the app and hold the hotkey to record. Release to transcribe and paste properly.
+
+## Requirements
 
 - macOS 13+
-- whisper-cli: `brew install whisper-cpp`
-- Modelo Whisper (se descarga automáticamente)
+- Accessibility permissions (for hotkey support)
 
-## Uso
+## Models
 
-```bash
-# Versión Swift (recomendada)
-./run-swift.sh
+Uses the whisper model automatically downloaded on first launch.
 
-# Versión Python (experimental)
-./run.sh
-```
+## License
 
-Mantén **Cmd+Shift+Space** mientras hablas, suelta para transcribir.
-
-## Modelos
-
-Los modelos se descargan en `models/`. Por defecto usa `small` (465MB).
-
-| Modelo | Tamaño | Velocidad | Precisión |
-|--------|--------|-----------|-----------|
-| tiny | 74MB | ⚡️⚡️⚡️ | ⭐️ |
-| base | 142MB | ⚡️⚡️ | ⭐️⭐️ |
-| small | 465MB | ⚡️ | ⭐️⭐️⭐️ |
-| medium | 1.5GB | 🐌 | ⭐️⭐️⭐️⭐️ |
-
-## Licencia
-
-MIT
+MIT License
