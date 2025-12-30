@@ -251,6 +251,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         onboardingController = OnboardingWindowController()
         onboardingController?.onComplete = { [weak self] hotkeyConfig, hotkeyMode in
+            // CRITICAL: Set isAppStarted IMMEDIATELY (synchronously) to prevent app termination
+            // when the onboarding window closes. The rest can be async.
+            self?.isAppStarted = true
+            
             DispatchQueue.main.async {
                 logDebug("🚀 Onboarding complete callback triggered with hotkey: \(hotkeyConfig.displayString), mode: \(hotkeyMode)")
                 // Save the received config values
@@ -303,12 +307,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
     
+    var appSetupComplete = false
+    
     func startApp() {
         logDebug("🚀 startApp() called")
-        guard !isAppStarted else {
-            logDebug("⚠️ startApp() called but app is already started. Skipping.")
+        guard !appSetupComplete else {
+            logDebug("⚠️ startApp() called but app setup is already complete. Skipping.")
             return
         }
+        appSetupComplete = true
         isAppStarted = true
         
         // Update model path to use downloaded model
@@ -328,7 +335,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Hide Dock icon for normal operation (menu bar mode)
         NSApp.setActivationPolicy(.accessory)
         
-        // Create floating indicator (already on main thread from callback)
+        // Create floating indicator (MUST be synchronous to avoid race conditions)
         logDebug("🚀 Creating FloatingIndicatorWindow...")
         floatingIndicator = FloatingIndicatorWindow()
         floatingIndicator.hotkeyDisplayString = config.hotkey.displayString
@@ -336,7 +343,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openSettings()
         }
         floatingIndicator.onStartRecording = { [weak self] in
-            self?.startRecording()
+            guard let self = self else { return }
+            // Note: lastActiveApplication is continuously tracked via NSWorkspace notification
+            // So it should always contain the last app the user was using (before clicking on us)
+            if !self.isRecording {
+                if let app = self.lastActiveApplication {
+                    logDebug("🎯 [CLICK TARGET] Using tracked app: \(app.localizedName ?? "Unknown")")
+                } else {
+                    logDebug("⚠️ [CLICK] No tracked app - paste will copy to clipboard only")
+                }
+            }
+            self.startRecording()
         }
         floatingIndicator.onStopRecording = { [weak self] in
             self?.stopRecording()
@@ -370,17 +387,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupEscapeMonitor()
         logDebug("⌨️ Hotkey monitors set up")
         
+        // Track app activations to always know the last active app (for click-to-record)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                // Only track if it's not our own app
+                if app.bundleIdentifier != Bundle.main.bundleIdentifier {
+                    self.lastActiveApplication = app
+                    logDebug("📱 [APP SWITCH] Now tracking: \(app.localizedName ?? "Unknown")")
+                }
+            }
+        }
+        
         logDebug("✅ startApp() completed successfully")
         logDebug("LocalWhisper Swift started.")
         logDebug("Model: \(modelPath)")
         logDebug("Hotkey: \(config.hotkey.displayString) (\(config.hotkeyMode.displayName))")
         logDebug("🎧 Hotkey keyCode: \(config.hotkey.keyCode), modifiers: \(config.hotkey.modifiers)")
         
-        // Show "Control-click for Settings" toast on first launch
+        // Show "Control-click for Settings" toast on first launch (floatingIndicator is guaranteed to exist now)
         let hasShownFirstLaunchToast = UserDefaults.standard.bool(forKey: "hasShownFirstLaunchToast")
         if !hasShownFirstLaunchToast {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                self.floatingIndicator.showSettingsToast()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.floatingIndicator.showSettingsToast()
             }
             UserDefaults.standard.set(true, forKey: "hasShownFirstLaunchToast")
         }

@@ -143,6 +143,7 @@ class FloatingIndicatorWindow: NSPanel {
         
         indicatorView.onClicked = { [weak self] in
             guard let self = self else { return }
+            print("DEBUG: indicatorView.onClicked triggered, state=\(self.currentState)")
             if self.currentState == .idle || self.currentState == .hovering {
                 // Check if user has used click-to-record before for toast
                 let hasUsedClickToRecord = UserDefaults.standard.bool(forKey: "hasUsedClickToRecord")
@@ -150,8 +151,10 @@ class FloatingIndicatorWindow: NSPanel {
                     self.showFirstClickToast()
                     UserDefaults.standard.set(true, forKey: "hasUsedClickToRecord")
                 }
+                print("DEBUG: Calling onStartRecording (nil? \(self.onStartRecording == nil))")
                 self.onStartRecording?()
             } else if self.currentState == .recording {
+                print("DEBUG: Calling onStopRecording (nil? \(self.onStopRecording == nil))")
                 self.onStopRecording?()
             }
         }
@@ -208,14 +211,37 @@ class FloatingIndicatorWindow: NSPanel {
     }
 
     override func mouseDown(with event: NSEvent) {
+        print("DEBUG: FloatingIndicatorWindow.mouseDown triggered")
         // Handle Ctrl+Click as Right Click
         if event.modifierFlags.contains(.control) {
             onOpenSettings?()
             return
         }
         
-        // Pass click to super so IndicatorView can handle it (it has specific hit testing)
-        super.mouseDown(with: event)
+        let mouseLoc = event.locationInWindow
+        // expandedWidth is 80. X button is on right.
+        // Let's say X area is last 24 pixels.
+        let xAreaStart = self.frame.width - 24
+        
+        if currentState == .recording {
+             if mouseLoc.x > xAreaStart {
+                 // X clicked -> Cancel
+                 onCancelRecording?()
+                 return
+             } else {
+                 // Body clicked -> Stop & Transcribe
+                 onStopRecording?()
+                 return
+             }
+        } else if currentState == .idle || currentState == .hovering {
+            // Show first-use tooltip (only once ever)
+            let hasUsedClickToRecord = UserDefaults.standard.bool(forKey: "hasUsedClickToRecord")
+            if !hasUsedClickToRecord {
+                showFirstClickToast()
+                UserDefaults.standard.set(true, forKey: "hasUsedClickToRecord")
+            }
+            onStartRecording?()
+        }
     }
     
     override func mouseMoved(with event: NSEvent) {
@@ -639,16 +665,34 @@ class IndicatorView: NSView {
     }
     
     override func mouseDown(with event: NSEvent) {
+        print("DEBUG: IndicatorView.mouseDown triggered")
+        // Handle Ctrl+Click as Right Click at View level just in case
+        if event.modifierFlags.contains(.control) {
+            // Pass to window via super, or handle?
+            // Better to let Window handle rightMouseDown, but Ctrl-Click is mouseDown.
+            // Let's explicitly ignore it here so it doesn't trigger body click.
+             super.mouseDown(with: event)
+             return
+        }
+
         if state == .recording {
             let mouseLoc = convert(event.locationInWindow, from: nil)
             let xAreaStart = bounds.width - 24 // 24px from right
             if mouseLoc.x > xAreaStart {
+                print("DEBUG: X area clicked, calling onCancelClicked")
                 onCancelClicked?()
                 return
             }
         }
+        print("DEBUG: Body clicked, calling onClicked (nil? \(onClicked == nil))")
         onClicked?()
     }
+    
+    // Ensure we accept first mouse to click even if window not key (it never is)
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
     
     func animateWaveform() {
         let baseLevel = CGFloat(audioLevel)

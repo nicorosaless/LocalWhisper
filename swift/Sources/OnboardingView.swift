@@ -22,7 +22,7 @@ enum OnboardingStep: Int, CaseIterable {
 // MARK: - Onboarding View
 struct OnboardingView: View {
     @State private var currentStep: OnboardingStep = .permissions
-    @State private var selectedLanguage = "es"
+    @State private var selectedLanguage = "en"
     @State private var downloadProgress: Double = 0
     @State private var isDownloading = false
     @State private var downloadComplete = false
@@ -588,8 +588,10 @@ class OnboardingWindowController {
             initialHotkeyConfig: initialHotkeyConfig,
             initialHotkeyMode: initialHotkeyMode,
             onComplete: { [weak self] hotkeyConfig, hotkeyMode in
-                self?.close()
+                // CRITICAL: Call onComplete FIRST (sets isAppStarted=true), THEN close window
+                // Otherwise app terminates before startApp() runs
                 self?.onComplete?(hotkeyConfig, hotkeyMode)
+                self?.close()
             }
         )
         
