@@ -3,8 +3,9 @@ import Carbon.HIToolbox
 import AVFoundation
 import SwiftUI
 
+
 func getPerformanceCoreCount() -> Int {
-    var size: Int = 0
+    // var size: Int = 0
     var results: Int = 0
     var sizeOfInt = MemoryLayout<Int>.size
     
@@ -15,9 +16,10 @@ func getPerformanceCoreCount() -> Int {
     // Fallback: simple heuristic or just return 0 to default to all cores
     return 0
 }
-
 func logDebug(_ message: String) {
+    #if DEBUG
     print(message)
+    #endif
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -52,7 +54,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var config: AppConfig = .defaultConfig
     let appDir: String
     
-
 
     override init() {
         logDebug("AppDelegate init started")
@@ -147,25 +148,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         logDebug("applicationDidFinishLaunching triggered")
-        
-        // Temporary: bypassed single instance check for debugging
-        /*
-        let runningApps = NSWorkspace.shared.runningApplications
-        let ourBundleID = Bundle.main.bundleIdentifier ?? "com.nicorosaless.LocalWhisper"
-        let otherInstances = runningApps.filter { 
-            $0.bundleIdentifier == ourBundleID && 
-            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier 
-        }
-        
-        if !otherInstances.isEmpty {
-            logDebug("⚠️ Another instance of LocalWhisper is already running. Quitting this instance.")
-            // Bring the other instance to front?
-            otherInstances.first?.activate(options: .activateIgnoringOtherApps)
-            NSApp.terminate(nil)
-            return
-        }
-        */
-        // -----------------------------
+
 
         // Check if onboarding is complete
         let onboardingComplete = UserDefaults.standard.bool(forKey: "onboardingComplete")
@@ -197,16 +180,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         logDebug("Decision: Starting App normally")
         
-        // Wrap in do-catch just in case
-        do {
-             // Save current version if we are starting normally
-             UserDefaults.standard.set(currentVersion, forKey: "lastRunVersion")
-             logDebug("UserDefaults saved")
-             
-             startApp()
-        } catch {
-             logDebug("CRITICAL ERROR in startup sequence: \(error)")
-        }
+         // Save current version if we are starting normally
+         UserDefaults.standard.set(currentVersion, forKey: "lastRunVersion")
+         logDebug("UserDefaults saved")
+         
+         startApp()
         
         // Open settings by default so user sees something (only if it's the first time on this version)
         if versionChanged {
@@ -466,13 +444,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindowController?.show()
     }
     
+    var eventTap: CFMachPort?
+    var runLoopSource: CFRunLoopSource?
+
     func setupHotkeyMonitor() {
-        // Remove existing monitors
+        // Remove existing NSEvent monitors if any (legacy cleanup)
         if let monitor = flagsMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = keyDownMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = keyUpMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localKeyDownMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localKeyUpMonitor { NSEvent.removeMonitor(monitor) }
+        
+        // Clean up previous Event Tap
+        if let eventTap = eventTap, let runLoopSource = runLoopSource {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+            self.eventTap = nil
+            self.runLoopSource = nil
+        }
         
         // Check accessibility permissions
         let trusted = AXIsProcessTrusted()
@@ -483,7 +472,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             logDebug("   Please go to System Settings > Privacy & Security > Accessibility")
             logDebug("   and enable 'LocalWhisper'")
             
-            // Open accessibility settings
             DispatchQueue.main.async {
                 let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
                 NSWorkspace.shared.open(url)
@@ -491,84 +479,106 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         
-        logDebug("🎹 Setting up hotkey monitor for keyCode \(config.hotkey.keyCode) with modifiers: \(config.hotkey.modifiers)")
-        logDebug("🎹 Current hotkey config: \(config.hotkey.displayString)")
+        logDebug("🎹 Setting up active event tap for keyCode \(config.hotkey.keyCode)")
         
-        // Monitor modifier flags
-        flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-            self?.checkHotkey()
+        let eventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+        
+        func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+            guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+            
+            if delegate.handleEvent(type: type, event: event) {
+                // Return nil to consume the event (suppress beep)
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
         }
         
-        // Local monitor for flags (when app is focused)
-        NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-            self?.checkHotkey()
-            return event
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(eventMask),
+            callback: eventTapCallback,
+            userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        ) else {
+            logDebug("❌ Failed to create event tap")
+            return
         }
         
-        // Monitor key down (Global)
-        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        
+        self.eventTap = tap
+        self.runLoopSource = source
+    }
+    
+    func handleEvent(type: CGEventType, event: CGEvent) -> Bool {
+        // Returns true if event should be consumed
+        
+        if type == .flagsChanged {
+            let flags = event.flags
+            // Map CGEventFlags to NSEvent.ModifierFlags for consistency with existing logic
+            var modifiers: NSEvent.ModifierFlags = []
+            if flags.contains(.maskCommand) { modifiers.insert(.command) }
+            if flags.contains(.maskShift) { modifiers.insert(.shift) }
+            if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+            if flags.contains(.maskControl) { modifiers.insert(.control) }
             
-            // logDebug("⌨️ Key pressed: \(event.keyCode)") // Silently log all keys to see if monitor works
+            self.pressedModifiers = modifiers.intersection([.command, .shift, .option, .control])
+            self.checkHotkey()
+            return false // Create checks don't consume flags
+        }
+        
+        if type == .keyDown {
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
             
-            if event.keyCode == self.config.hotkey.keyCode {
-                logDebug("🎹 HOTKEY DETECTED: \(event.keyCode)")
-                // Update modifiers from the keyDown event to ensure accuracy
-                self.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            if keyCode == self.config.hotkey.keyCode {
+                // Update modifiers from event flags to ensure accuracy
+                let flags = event.flags
+                var modifiers: NSEvent.ModifierFlags = []
+                if flags.contains(.maskCommand) { modifiers.insert(.command) }
+                if flags.contains(.maskShift) { modifiers.insert(.shift) }
+                if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+                if flags.contains(.maskControl) { modifiers.insert(.control) }
                 
-                // CRITICAL: Filter out events if we are not the intended target but the hotkey matches
+                self.pressedModifiers = modifiers.intersection([.command, .shift, .option, .control])
+                
                 if self.checkModifiersMatch() {
-                    logDebug("✅ Modifiers Match! Triggering hotkey...")
+                    logDebug("🎹 Active Hotkey Trap: Consuming event for key \(keyCode)")
                     if !self.isHotkeyDown {
                         self.isHotkeyDown = true
                         self.hotkeyKeyPressed = true
                         self.checkHotkey()
                     }
-                } else {
-                    logDebug("❌ Modifiers do not match.")
+                    return true // CONSUME EVENT -> PREVENTS BEEP
                 }
             }
-        }
-
-        // Monitor key down (Local - for when app has focus)
-        localKeyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return event }
-            if event.keyCode == self.config.hotkey.keyCode {
-                // Update modifiers from the keyDown event to ensure accuracy
-                self.pressedModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-                if !self.isHotkeyDown {
-                    self.isHotkeyDown = true
-                    self.hotkeyKeyPressed = true
-                    self.checkHotkey()
-                }
-                // Consume the event when modifiers match to prevent system beep sound
-                if self.checkModifiersMatch() {
-                    return nil
-                }
-            }
-            return event
         }
         
-        // Monitor key up (Global)
-        keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            guard let self = self else { return }
-            if event.keyCode == self.config.hotkey.keyCode {
+        if type == .keyUp {
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            if keyCode == self.config.hotkey.keyCode {
                 self.isHotkeyDown = false
                 self.handleKeyUp()
+                // Should we consume keyUp? Usually safer effectively to consume it if we consumed keyDown
+                // BUT, if we consume it, other apps might miss the keyRelease if hotkey logic was weird.
+                // Generally fine to consume it if it was our hotkey.
+                let flags = event.flags
+                var modifiers: NSEvent.ModifierFlags = []
+                 if flags.contains(.maskCommand) { modifiers.insert(.command) }
+                if flags.contains(.maskShift) { modifiers.insert(.shift) }
+                if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+                if flags.contains(.maskControl) { modifiers.insert(.control) }
+                
+                // We check basic match, but keyUp might have fewer modifiers if user released them first.
+                // Just checking keycode is usually enough for the 'release' of the hotkey interaction.
+                return true 
             }
         }
-
-        // Monitor key up (Local)
-        localKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
-            guard let self = self else { return event }
-            if event.keyCode == self.config.hotkey.keyCode {
-                self.isHotkeyDown = false
-                self.handleKeyUp()
-            }
-            return event
-        }
+        
+        return false
     }
     
     func handleKeyUp() {
@@ -809,20 +819,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func transcribe() {
         guard let audioURL = tempAudioURL else { return }
         
-        let desktopPath = NSSearchPathForDirectoriesInDomains(.desktopDirectory, .userDomainMask, true).first!
-        let logURL = URL(fileURLWithPath: desktopPath).appendingPathComponent("whisper_debug.log")
-        
-        func log(_ message: String) {
-            logDebug(message)
-        }
 
-        log("🚀 Starting transcription...")
-        log("📁 Audio file: \(audioURL.path)")
-        log("⚙️ Language: \(config.language)")
-        log("🧠 Model: \(modelPath)")
+
+        logDebug("🚀 Starting transcription...")
+        logDebug("📁 Audio file: \(audioURL.path)")
+        logDebug("⚙️ Language: \(config.language)")
+        logDebug("🧠 Model: \(modelPath)")
 
         guard let whisperPath = getWhisperCliPath() else {
-            log("❌ Error: whisper-cli not found")
+            logDebug("❌ Error: whisper-cli not found")
             DispatchQueue.main.async {
                 if let image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Error") {
                     image.isTemplate = true
@@ -834,19 +839,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         
-        log("🛠 CLI Path: \(whisperPath)")
+        logDebug("🛠 CLI Path: \(whisperPath)")
         
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             // Check audio file size
             if let attrs = try? FileManager.default.attributesOfItem(atPath: audioURL.path) {
                 let size = attrs[.size] as? Int64 ?? 0
-                log("🎙️ Audio file size: \(size) bytes")
+                logDebug("🎙️ Audio file size: \(size) bytes")
             }
             
             // Optimal thread count: Target Performance Cores
             let perfCores = getPerformanceCoreCount()
             let usageThreads = perfCores > 0 ? perfCores : ProcessInfo.processInfo.processorCount
-            log("⚡ Using \(usageThreads) threads (Perf Cores) for low latency")
+            logDebug("⚡ Using \(usageThreads) threads (Perf Cores) for low latency")
             
             // Build language-specific prompt for better accuracy
             let qualityPrompt: String
@@ -871,7 +876,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "-l", config.language
             ]
             
-            log("🏃 Running: \(cmd.joined(separator: " "))")
+            logDebug("🏃 Running: \(cmd.joined(separator: " "))")
             
             let process = Process()
             process.executableURL = URL(fileURLWithPath: whisperPath)
@@ -883,7 +888,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let libPath = resourcePath + "/lib"
                 env["DYLD_LIBRARY_PATH"] = libPath
                 process.environment = env
-                log("🔧 Set DYLD_LIBRARY_PATH: \(libPath)")
+                logDebug("🔧 Set DYLD_LIBRARY_PATH: \(libPath)")
             }
             
             let pipe = Pipe()
@@ -902,14 +907,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
                 let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
                 
-                if !output.isEmpty { log("📤 STDOUT:\n\(output)") }
-                if !errorOutput.isEmpty { log("⚠️ STDERR:\n\(errorOutput)") }
+                if !output.isEmpty { logDebug("📤 STDOUT:\n\(output)") }
+                if !errorOutput.isEmpty { logDebug("⚠️ STDERR:\n\(errorOutput)") }
                 
                 let text = parseWhisperOutput(output)
                 
                 DispatchQueue.main.async {
                     if !text.isEmpty {
-                        log("✅ Transcription successful: \(text)")
+                        logDebug("✅ Transcription successful: \(text)")
                         
                         // Copy to clipboard
                         NSPasteboard.general.clearContents()
@@ -932,7 +937,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.updateStatusMenuItem("Ready")
                         self.floatingIndicator.setState(.idle)
                     } else {
-                        log("❓ No text detected in transcription")
+                        logDebug("❓ No text detected in transcription")
                         self.updateStatusMenuItem("No text")
                         self.floatingIndicator.setState(.idle)
                     }
@@ -946,7 +951,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 try? FileManager.default.removeItem(at: audioURL)
                 
             } catch {
-                log("💀 Fatal error in transcription: \(error)")
+                logDebug("💀 Fatal error in transcription: \(error)")
                 DispatchQueue.main.async {
                     if let image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "Error") {
                          image.isTemplate = true

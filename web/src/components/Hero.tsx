@@ -14,8 +14,8 @@ const Hero = () => {
               <div className="absolute inset-0 bg-[#8B5CF6]/20 blur-3xl rounded-full scale-110 opacity-50 group-hover:opacity-100 transition-opacity duration-500" />
               <img src="/icon.png" alt="LocalWhisper Logo" className="w-24 h-24 relative z-10 drop-shadow-2xl" />
             </div>
-            <h1 className="text-6xl md:text-8xl font-light tracking-tight lowercase">
-              local whisper
+            <h1 className="text-6xl md:text-8xl font-light tracking-tight">
+              Local Whisper
             </h1>
             <p className="text-sm tracking-widest uppercase text-muted-foreground font-medium">
               Only for Mac
@@ -42,7 +42,7 @@ const Hero = () => {
               size="lg"
               variant="ghost"
               className="font-light px-12 py-6 text-lg transition-all duration-300 min-w-[200px] hover:text-[#8B5CF6] hover:bg-[#8B5CF6]/5"
-              onClick={() => window.open('https://github.com/nicorosaless/whipermac', '_blank')}
+              onClick={() => window.open('https://github.com/nicorosaless/LocalWhisper', '_blank')}
             >
               github
             </Button>
@@ -69,73 +69,66 @@ const Hero = () => {
               <X size={20} />
             </button>
 
-            <div className="mb-8">
-              <h2 className="text-3xl font-light tracking-tight mb-2">Install LocalWhisper</h2>
-              <p className="text-muted-foreground font-light">
-                Choose your preferred installation method for macOS
-              </p>
+            <div className="mb-8 text-center">
+              <h2 className="text-3xl font-light tracking-tight mb-2">Install Local Whisper</h2>
+              <div className="flex justify-center mt-4">
+                <a
+                  href="/LocalWhisper.dmg"
+                  download="LocalWhisper.dmg"
+                  className="flex items-center justify-center gap-3 bg-[#8B5CF6] text-white hover:bg-[#7C3AED] font-medium py-3 px-8 rounded-full text-lg transition-all shadow-lg hover:shadow-[#8B5CF6]/25"
+                >
+                  <Download size={20} />
+                  Download for Mac
+                </a>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-8">
-              {/* Manual Path - Centered and Expanded */}
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-sm font-medium uppercase tracking-wider text-muted-foreground mb-4 text-center">Manual Installation</h3>
-                  <div className="space-y-6 max-w-lg mx-auto">
-                    <div className="flex gap-4 p-4 rounded-xl bg-muted/20 border border-border/50">
-                      <span className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-bold border border-primary/20">1</span>
-                      <div className="space-y-3 w-full">
-                        <p className="text-base font-medium">Download the app</p>
-                        <a
-                          href="/LocalWhisper.dmg"
-                          download="LocalWhisper.dmg"
-                          className="flex items-center justify-center w-full bg-foreground text-background hover:opacity-90 font-medium py-3 rounded-xl text-sm transition-all shadow-sm hover:shadow-md"
-                        >
-                          <Download size={18} className="mr-2" />
-                          LocalWhisper.dmg
-                        </a>
-                      </div>
-                    </div>
+            <div className="space-y-6">
 
-                    <div className="flex gap-4 p-4 rounded-xl bg-muted/20 border border-border/50">
-                      <span className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-bold border border-primary/20">2</span>
-                      <div className="space-y-1">
-                        <p className="text-base font-medium">Drag to Applications</p>
-                        <p className="text-sm text-muted-foreground leading-relaxed">Open the .dmg and drag LocalWhisper to your Applications folder.</p>
-                      </div>
-                    </div>
+              {/* Security/Open Source Explanation */}
+              <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 text-sm">
+                <div className="flex gap-3">
+                  <span className="text-blue-500 mt-0.5"><span className="w-2 h-2 rounded-full bg-blue-500 block relative top-1.5"></span></span>
+                  <div className="space-y-1">
+                    <p className="font-medium text-blue-600 dark:text-blue-400">Why a security warning?</p>
+                    <p className="text-muted-foreground leading-relaxed">
+                      This project is <strong>100% open source and free</strong>. The code is fully auditable on <a href="https://github.com/nicorosaless/LocalWhisper" target="_blank" className="underline underline-offset-2 hover:text-foreground">GitHub</a>.
+                      Because we don't pay for an Annual Apple Developer ID subscription to keep this tool free, macOS treats it as an "unidentified developer". It is completely safe to run.
+                    </p>
+                  </div>
+                </div>
+              </div>
 
-                    <div className="flex gap-4 p-4 rounded-xl bg-amber-500/5 border border-amber-500/20">
-                      <span className="flex-shrink-0 w-8 h-8 rounded-full bg-amber-500/10 text-amber-600 flex items-center justify-center text-sm font-bold border border-amber-500/20">3</span>
-                      <div className="space-y-2">
-                        <p className="text-base font-medium text-amber-600">First Launch (Required)</p>
-                        <p className="text-sm text-muted-foreground leading-relaxed">macOS blocks apps from unknown developers. To open:</p>
-                        <ul className="text-sm text-muted-foreground space-y-2 ml-1 border-l-2 border-amber-500/20 pl-4 pt-1 mt-2">
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span><strong>Right-click</strong> (or Control+click) on LocalWhisper.app</li>
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Select <strong>"Open"</strong> from the menu</li>
-                          <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Click <strong>"Open"</strong> in the dialog that appears</li>
-                        </ul>
-                        <p className="text-xs text-muted-foreground/70 mt-2 italic">This is only needed the first time you open the app.</p>
-                      </div>
-                    </div>
+              {/* Installation Steps */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-medium uppercase tracking-wider text-muted-foreground text-center">Installation Steps</h3>
+
+                <div className="grid gap-4">
+                  <div className="flex gap-4 p-4 rounded-xl bg-muted/20 border border-border/50 items-center">
+                    <span className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-bold border border-primary/20">1</span>
+                    <p className="text-base font-medium">Open the <strong>.dmg</strong> and drag to Applications</p>
                   </div>
 
-
-                  <div className="mt-8 pt-6 border-t border-border/50 flex flex-col items-center gap-4">
-                    <p className="text-xs text-muted-foreground/80 font-light flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-foreground/20" />
-                      Look for the waveform icon <span className="font-sans">⏦</span> in your menu bar.
-                    </p>
-                    <div className="flex items-center gap-4 text-[10px] uppercase tracking-[0.2em] text-muted-foreground/40">
-                      <span>Free</span>
-                      <span className="w-1 h-1 rounded-full bg-current" />
-                      <span>Open Source</span>
-                      <span className="w-1 h-1 rounded-full bg-current" />
-                      <span>100% Private</span>
+                  <div className="flex gap-4 p-4 rounded-xl bg-amber-500/5 border border-amber-500/20">
+                    <span className="flex-shrink-0 w-8 h-8 rounded-full bg-amber-500/10 text-amber-600 flex items-center justify-center text-sm font-bold border border-amber-500/20">2</span>
+                    <div className="space-y-2 w-full">
+                      <p className="text-base font-medium text-amber-600">First Launch</p>
+                      <ul className="text-sm text-muted-foreground space-y-2">
+                        <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Open the app & click <strong>"Done"</strong> if blocked</li>
+                        <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Go to <strong>System Settings</strong> &gt; <strong>Privacy & Security</strong></li>
+                        <li className="flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Scroll down and click <strong>"Open Anyway"</strong></li>
+                      </ul>
                     </div>
                   </div>
                 </div>
               </div>
+
+              <div className="pt-4 border-t border-border/50 text-center">
+                <p className="text-xs text-muted-foreground/60 italic">
+                  Licensed under MIT License. You are free to use and modify, but please respect the project's attribution.
+                </p>
+              </div>
+
             </div>
           </div>
         </div>

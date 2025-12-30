@@ -74,10 +74,7 @@ class FloatingIndicatorWindow: NSPanel {
         return NSScreen.main ?? NSScreen.screens.first!
     }
     
-    // Check if mouse is near the dock trigger zone (Removed - now fixed position)
-    private func isMouseNearDock() -> Bool {
-        return false
-    }
+
     
     // Calculate the Y position (Simplified - always fixed at bottom)
     private func calculateBottomY(for screen: NSScreen, dockActive: Bool) -> CGFloat {
@@ -86,21 +83,9 @@ class FloatingIndicatorWindow: NSPanel {
     }
     
     private func logDebug(_ message: String) {
-        let timestamp = Date().description
-        let logMessage = "[\(timestamp)] [Indicator] \(message)\n"
-        print(message)
-        let logURL = URL(fileURLWithPath: "/tmp/whisper_mac_startup.log")
-        if let data = logMessage.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logURL.path) {
-                if let fileHandle = try? FileHandle(forWritingTo: logURL) {
-                    fileHandle.seekToEndOfFile()
-                    fileHandle.write(data)
-                    fileHandle.closeFile()
-                }
-            } else {
-                try? data.write(to: logURL)
-            }
-        }
+        #if DEBUG
+        print("[Indicator] \(message)")
+        #endif
     }
 
     init() {
@@ -143,7 +128,7 @@ class FloatingIndicatorWindow: NSPanel {
         
         indicatorView.onClicked = { [weak self] in
             guard let self = self else { return }
-            print("DEBUG: indicatorView.onClicked triggered, state=\(self.currentState)")
+
             if self.currentState == .idle || self.currentState == .hovering {
                 // Check if user has used click-to-record before for toast
                 let hasUsedClickToRecord = UserDefaults.standard.bool(forKey: "hasUsedClickToRecord")
@@ -151,10 +136,10 @@ class FloatingIndicatorWindow: NSPanel {
                     self.showFirstClickToast()
                     UserDefaults.standard.set(true, forKey: "hasUsedClickToRecord")
                 }
-                print("DEBUG: Calling onStartRecording (nil? \(self.onStartRecording == nil))")
+
                 self.onStartRecording?()
             } else if self.currentState == .recording {
-                print("DEBUG: Calling onStopRecording (nil? \(self.onStopRecording == nil))")
+
                 self.onStopRecording?()
             }
         }
@@ -211,7 +196,7 @@ class FloatingIndicatorWindow: NSPanel {
     }
 
     override func mouseDown(with event: NSEvent) {
-        print("DEBUG: FloatingIndicatorWindow.mouseDown triggered")
+
         // Handle Ctrl+Click as Right Click
         if event.modifierFlags.contains(.control) {
             onOpenSettings?()
@@ -397,13 +382,14 @@ class FloatingIndicatorWindow: NSPanel {
         animateToExpandedSize()
         
         // Show help tooltip immediately (replacing "Listo")
-        print("DEBUG: enterHoverState called - showing help tooltip")
+        // Show help tooltip immediately (replacing "Listo")
+
         showHelpTooltip()
         
         // Hide tooltip after 3 seconds
         tooltipTimer?.invalidate()
         tooltipTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-            print("DEBUG: Hiding tooltip")
+
             self?.hideTooltip()
         }
     }
@@ -420,9 +406,7 @@ class FloatingIndicatorWindow: NSPanel {
         hideTooltip()
     }
     
-    private func showStatusTooltip() {
-       // No status tooltips as requested
-    }
+
     
     private func showHelpTooltip() {
         let helpText = "Press \(hotkeyDisplayString) or click to transcribe"
@@ -665,7 +649,7 @@ class IndicatorView: NSView {
     }
     
     override func mouseDown(with event: NSEvent) {
-        print("DEBUG: IndicatorView.mouseDown triggered")
+
         // Handle Ctrl+Click as Right Click at View level just in case
         if event.modifierFlags.contains(.control) {
             // Pass to window via super, or handle?
@@ -679,12 +663,11 @@ class IndicatorView: NSView {
             let mouseLoc = convert(event.locationInWindow, from: nil)
             let xAreaStart = bounds.width - 24 // 24px from right
             if mouseLoc.x > xAreaStart {
-                print("DEBUG: X area clicked, calling onCancelClicked")
+
                 onCancelClicked?()
                 return
             }
         }
-        print("DEBUG: Body clicked, calling onClicked (nil? \(onClicked == nil))")
         onClicked?()
     }
     

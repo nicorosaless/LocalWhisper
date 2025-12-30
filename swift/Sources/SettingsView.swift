@@ -318,7 +318,7 @@ class HotkeyRecorderNSView: NSView {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, self.isRecordingHotkey else { return event }
             
-            let ourBundleID = Bundle.main.bundleIdentifier ?? "com.nicorosaless.LocalWhisper"
+            // let ourBundleID = Bundle.main.bundleIdentifier ?? "com.nicorosaless.LocalWhisper"
             let pointInView = self.convert(event.locationInWindow, from: nil)
             if !self.bounds.contains(pointInView) {
                 DispatchQueue.main.async { self.coordinator?.cancelRecording() }

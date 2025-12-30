@@ -580,7 +580,7 @@ class OnboardingWindowController {
     var onComplete: ((HotkeyConfig, HotkeyMode) -> Void)?
     
     func show(initialHotkeyConfig: HotkeyConfig, initialHotkeyMode: HotkeyMode) {
-        print("🎯 OnboardingWindowController.show() called")
+        // print("🎯 OnboardingWindowController.show() called")
         
         close()
         

@@ -44,3 +44,6 @@ models/*.bin
 
 # Exception: Allow DMG in web/public for distribution
 !web/public/*.dmg
+
+# Local Netlify folder
+.netlify

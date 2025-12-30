@@ -56,10 +56,14 @@ class ModelDownloader {
                 // Move downloaded file
                 try FileManager.default.moveItem(at: location, to: destination)
                 
+                #if DEBUG
                 print("Model downloaded to: \(destination.path)")
+                #endif
                 completion(true)
             } catch {
+                #if DEBUG
                 print("Error moving model: \(error)")
+                #endif
                 completion(false)
             }
         }), delegateQueue: nil)
