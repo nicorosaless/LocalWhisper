@@ -144,10 +144,20 @@ class FloatingIndicatorWindow: NSPanel {
         indicatorView.onClicked = { [weak self] in
             guard let self = self else { return }
             if self.currentState == .idle || self.currentState == .hovering {
+                // Check if user has used click-to-record before for toast
+                let hasUsedClickToRecord = UserDefaults.standard.bool(forKey: "hasUsedClickToRecord")
+                if !hasUsedClickToRecord {
+                    self.showFirstClickToast()
+                    UserDefaults.standard.set(true, forKey: "hasUsedClickToRecord")
+                }
                 self.onStartRecording?()
             } else if self.currentState == .recording {
                 self.onStopRecording?()
             }
+        }
+        
+        indicatorView.onCancelClicked = { [weak self] in
+             self?.onCancelRecording?()
         }
         
         startHoverDetection()
@@ -193,21 +203,19 @@ class FloatingIndicatorWindow: NSPanel {
         RunLoop.main.add(screenCheckTimer!, forMode: .common)
     }
     
+    override func rightMouseDown(with event: NSEvent) {
+        onOpenSettings?()
+    }
+
     override func mouseDown(with event: NSEvent) {
-        print("👆 Window clicked! State: \(currentState)")
-        if currentState == .idle || currentState == .hovering {
-            // Show first-use tooltip
-            let hasUsedClickToRecord = UserDefaults.standard.bool(forKey: "hasUsedClickToRecord")
-            if !hasUsedClickToRecord {
-                showFirstClickToast()
-                UserDefaults.standard.set(true, forKey: "hasUsedClickToRecord")
-            }
-            onStartRecording?()
-        } else if currentState == .recording {
-            // Any click during recording = cancel immediately (no transcription)
-            print("❌ Clicked during recording - canceling")
-            onCancelRecording?()
+        // Handle Ctrl+Click as Right Click
+        if event.modifierFlags.contains(.control) {
+            onOpenSettings?()
+            return
         }
+        
+        // Pass click to super so IndicatorView can handle it (it has specific hit testing)
+        super.mouseDown(with: event)
     }
     
     override func mouseMoved(with event: NSEvent) {
@@ -226,7 +234,7 @@ class FloatingIndicatorWindow: NSPanel {
     private func showFirstClickToast() {
         // Calculate tooltip position (above the indicator)
         let indicatorFrame = self.frame
-        let tooltipText = "🎵 Click again to stop recording"
+        let tooltipText = "Click again to stop recording"
         
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let size = tooltipText.size(withAttributes: [.font: font])
@@ -272,6 +280,10 @@ class FloatingIndicatorWindow: NSPanel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
             toastWindow.orderOut(nil)
         }
+    }
+    
+    func showSettingsToast() {
+        showTooltip(text: "Control-click for Settings", duration: 5.0)
     }
     
     // Helper to compare NSRect values properly
@@ -383,28 +395,15 @@ class FloatingIndicatorWindow: NSPanel {
     }
     
     private func showStatusTooltip() {
-        let statusText: String
-        switch currentState {
-        case .idle, .hovering:
-            statusText = "Ready"
-        case .recording:
-            if let target = lockedTargetAppName {
-                statusText = "Recording for \(target)..."
-            } else {
-                statusText = "Recording..."
-            }
-        case .transcribing:
-            statusText = "Transcribing..."
-        }
-        showTooltip(text: statusText)
+       // No status tooltips as requested
     }
     
     private func showHelpTooltip() {
-        let helpText = "Press \(hotkeyDisplayString) to transcribe your voice to text!"
+        let helpText = "Press \(hotkeyDisplayString) or click to transcribe"
         showTooltip(text: helpText)
     }
     
-    private func showTooltip(text: String) {
+    private func showTooltip(text: String, duration: TimeInterval = 0) {
         hideTooltip()
         
         // Create tooltip label
@@ -446,6 +445,13 @@ class FloatingIndicatorWindow: NSPanel {
         
         tooltipWindow?.contentView = bgView
         tooltipWindow?.orderFrontRegardless()
+        
+        if duration > 0 {
+            tooltipTimer?.invalidate()
+            tooltipTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+                self?.hideTooltip()
+            }
+        }
     }
     
     private func hideTooltip() {
@@ -604,8 +610,9 @@ class IndicatorView: NSView {
     // X button highlight state
     private var xHighlighted = false
     
-    // Click callback
+    // Click callbacks
     var onClicked: (() -> Void)?
+    var onCancelClicked: (() -> Void)?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -632,6 +639,14 @@ class IndicatorView: NSView {
     }
     
     override func mouseDown(with event: NSEvent) {
+        if state == .recording {
+            let mouseLoc = convert(event.locationInWindow, from: nil)
+            let xAreaStart = bounds.width - 24 // 24px from right
+            if mouseLoc.x > xAreaStart {
+                onCancelClicked?()
+                return
+            }
+        }
         onClicked?()
     }
     

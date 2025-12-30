@@ -112,11 +112,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if let hotkeyMode = json["hotkey_mode"] as? String {
                         config.hotkeyMode = HotkeyMode(rawValue: hotkeyMode) ?? .pushToTalk
                     }
+                    config.launchAtLogin = json["launch_at_login"] as? Bool ?? false
                 }
             }
         }
         
-        logDebug("Config loaded: language=\(config.language), mode=\(config.hotkeyMode)")
+        logDebug("Config loaded: language=\(config.language), mode=\(config.hotkeyMode), launchAtLogin=\(config.launchAtLogin)")
     }
     
     func saveConfig() {
@@ -128,6 +129,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let data = try encoder.encode(config)
             try data.write(to: URL(fileURLWithPath: configPath))
             logDebug("Config saved")
+            
+            // Sync Launch at Login state with system
+            updateLaunchAtLogin()
         } catch {
             logDebug("Error saving config: \(error)")
         }
@@ -241,6 +245,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func showOnboarding() {
+        // Show Dock icon during onboarding so users can find the app
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        
         onboardingController = OnboardingWindowController()
         onboardingController?.onComplete = { [weak self] hotkeyConfig, hotkeyMode in
             DispatchQueue.main.async {
@@ -262,9 +270,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     // Prevent app from terminating when the last window (onboarding) closes
-    // This is critical for menu bar apps that should stay running without visible windows
+    // UNLESS we are in onboarding mode (isAppStarted == false) - in that case, closing should Quit
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return false
+        return !isAppStarted
     }
     
     // Handle Dock icon click - reopen onboarding if not complete, or show settings
@@ -317,6 +325,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         logDebug("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language)")
         
+        // Hide Dock icon for normal operation (menu bar mode)
+        NSApp.setActivationPolicy(.accessory)
+        
         // Create floating indicator (already on main thread from callback)
         logDebug("🚀 Creating FloatingIndicatorWindow...")
         floatingIndicator = FloatingIndicatorWindow()
@@ -364,6 +375,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logDebug("Model: \(modelPath)")
         logDebug("Hotkey: \(config.hotkey.displayString) (\(config.hotkeyMode.displayName))")
         logDebug("🎧 Hotkey keyCode: \(config.hotkey.keyCode), modifiers: \(config.hotkey.modifiers)")
+        
+        // Show "Control-click for Settings" toast on first launch
+        let hasShownFirstLaunchToast = UserDefaults.standard.bool(forKey: "hasShownFirstLaunchToast")
+        if !hasShownFirstLaunchToast {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.floatingIndicator.showSettingsToast()
+            }
+            UserDefaults.standard.set(true, forKey: "hasShownFirstLaunchToast")
+        }
     }
     
     func updateMenu() {
@@ -813,9 +833,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "-t", String(usageThreads),     // Use Performance Cores
                 "-bs", "2",                     // Beam size: 2 is sufficient for high quality dictation & fast speed
                 "-bo", "0",                     // Best of: 0 (disabled) to rely on beam search (fastest)
-                "-nth", "0.4",                  // No-speech threshold: slightly relaxed
-                "-et", "2.4",                   // Entropy threshold: default
-                "-lpt", "-0.5",                 // Log probability threshold: stricter quality filter
+                "-lpt", "-1.0",                 // Log probability threshold: relaxed (was -0.5)
                 "--prompt", qualityPrompt,      // Language-specific context
                 "-l", config.language
             ]
@@ -913,6 +931,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for line in output.split(separator: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
+            
+            // Filter out common hallucinations or "blank audio" markers
+            if trimmed.localizedCaseInsensitiveContains("blank audio") { continue }
+            if trimmed == "[BLANK_AUDIO]" { continue }
+            
             if trimmed.hasPrefix("[") && trimmed.contains("-->") {
                 if let idx = trimmed.firstIndex(of: "]") {
                     let text = String(trimmed[trimmed.index(after: idx)...]).trimmingCharacters(in: .whitespaces)
@@ -923,6 +946,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return lines.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+    
+    // MARK: - Launch at Login
+    
+    func updateLaunchAtLogin() {
+        let label = "com.nicorosaless.LocalWhisper"
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        let launchAgentDir = homeDir.appendingPathComponent("Library/LaunchAgents")
+        let plistURL = launchAgentDir.appendingPathComponent("\(label).plist")
+        
+        if config.launchAtLogin {
+            logDebug("🚀 Ensuring Launch Agent exists...")
+            
+            // Ensure directory exists
+            try? FileManager.default.createDirectory(at: launchAgentDir, withIntermediateDirectories: true)
+            
+            let executablePath = Bundle.main.executablePath ?? (Bundle.main.bundlePath + "/Contents/MacOS/LocalWhisper")
+            
+            let plistContent = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>\(label)</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>\(executablePath)</string>
+                </array>
+                <key>RunAtLoad</key>
+                <true/>
+                <key>KeepAlive</key>
+                <false/>
+                <key>ProcessType</key>
+                <string>Interactive</string>
+            </dict>
+            </plist>
+            """
+            
+            do {
+                try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+                logDebug("✅ Launch Agent created/updated at \(plistURL.path)")
+            } catch {
+                logDebug("❌ Failed to create Launch Agent: \(error)")
+            }
+        } else {
+            logDebug("🛑 Removing Launch Agent...")
+            try? FileManager.default.removeItem(at: plistURL)
+        }
     }
     
     

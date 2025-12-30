@@ -93,6 +93,7 @@ struct AppConfig: Codable {
     var modelPath: String
     var pasteDelay: Int // milliseconds, delay after app activation before paste
     var preferredPasteMethod: PasteMethod
+    var launchAtLogin: Bool
     
     static let defaultConfig = AppConfig(
         language: "es",
@@ -101,7 +102,8 @@ struct AppConfig: Codable {
         autoPaste: true,
         modelPath: "models/ggml-small.bin",
         pasteDelay: 200,
-        preferredPasteMethod: .auto
+        preferredPasteMethod: .auto,
+        launchAtLogin: false
     )
     
     enum CodingKeys: String, CodingKey {
@@ -112,6 +114,7 @@ struct AppConfig: Codable {
         case modelPath = "model_path"
         case pasteDelay = "paste_delay"
         case preferredPasteMethod = "preferred_paste_method"
+        case launchAtLogin = "launch_at_login"
     }
 }
 
@@ -429,6 +432,19 @@ struct SettingsView: View {
                                 .pickerStyle(.menu)
                                 .labelsHidden()
                                 .tint(.white)
+                            }
+                        }
+                        
+                        // General Section
+                        settingsSection(title: "General") {
+                            HStack {
+                                Text("Launch at login")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.white.opacity(0.5))
+                                Spacer()
+                                Toggle("", isOn: $config.launchAtLogin)
+                                    .toggleStyle(SwitchToggleStyle(tint: .white))
+                                    .labelsHidden()
                             }
                         }
                         
