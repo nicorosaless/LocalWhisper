@@ -18,23 +18,39 @@ DerivedData/
 # Build outputs
 build/
 bin/
-lib/
-
 # Models (large files - download separately)
 models/*.bin
 
 # macOS
+# System
 .DS_Store
-*.dSYM/
+*.swp
+*~
 
-# Temp files
+# Build
+build/
+DerivedData/
+.build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Config
+config.json
+
+# Web
+web/node_modules/
+web/dist/
+web/public/LocalWhisper.dmg
+
+# Logs
+*.log
 *.wav
 *.tmp
 
 # IDE
 .vscode/
-.idea/
-
 # Logs
 *.log
 

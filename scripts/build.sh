@@ -6,7 +6,7 @@ EXECUTABLE_NAME="LocalWhisper"
 BUILD_DIR="swift/.build/release"
 OUTPUT_DIR="build"
 APP_BUNDLE="${OUTPUT_DIR}/${APP_NAME}.app"
-ICON_SOURCE="swift/Resources/AppIcon.png"
+ICON_SOURCE="assets/icon.png"
 
 echo "🚀 Starting build process for ${APP_NAME}..."
 

@@ -2,14 +2,16 @@
 set -e
 
 APP_NAME="LocalWhisper"
-VOL_NAME="${APP_NAME}"
-DMG_FINAL="build/LocalWhisper.dmg"
+VOLNAME="LocalWhisper"
+DMG_NAME="LocalWhisper.dmg"
+SRC_FOLDER="build/${APP_NAME}.app"
+DMG_FINAL="build/${DMG_NAME}"
 STAGING_DIR="build/dmg_temp"
 TEMP_DMG="build/pack.temp.dmg"
 
 # Ensure we have a fresh build
-if [ ! -d "build/${APP_NAME}.app" ]; then
-    echo "❌ build/${APP_NAME}.app not found! Please run ./build_app.sh first."
+if [ ! -d "${SRC_FOLDER}" ]; then
+    echo "❌ ${SRC_FOLDER} not found! Please run ./build_app.sh first."
     exit 1
 fi
 
@@ -28,7 +30,7 @@ xattr -cr "$STAGING_DIR/${APP_NAME}.app"
 
 echo "💿 Creating temporary disk image..."
 # Create a read-write DMG
-hdiutil create -srcfolder "$STAGING_DIR" -volname "$VOL_NAME" -fs HFS+ -fsargs "-c c=64,a=16,e=16" -format UDRW "$TEMP_DMG" -quiet
+hdiutil create -srcfolder "$STAGING_DIR" -volname "$VOLNAME" -fs HFS+ -fsargs "-c c=64,a=16,e=16" -format UDRW "$TEMP_DMG" -quiet
 
 echo "🎨 Applying layout with AppleScript..."
 # Mount the temporary DMG
@@ -38,7 +40,7 @@ sleep 2
 # AppleScript to set view options and icon positions
 echo '
    tell application "Finder"
-     tell disk "'${VOL_NAME}'"
+     tell disk "'${VOLNAME}'"
            open
            set current view of container window to icon view
            set toolbar visible of container window to false
