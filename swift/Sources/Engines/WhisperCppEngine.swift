@@ -94,7 +94,13 @@ class WhisperCppEngine: TranscriptionEngine {
         process.standardError = errorPipe
         
         try process.run()
-        process.waitUntilExit()
+        
+        // Non-blocking async wait using continuation
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
         
         let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: outputData, encoding: .utf8) ?? ""
@@ -156,16 +162,10 @@ class WhisperCppEngine: TranscriptionEngine {
 
 extension URLSession {
     func download(from url: URL, progress: @escaping (Double) -> Void) async throws -> (URL, URLResponse) {
-        var progressHandler: ((Double) -> Void)? = progress
-        
-        let delegate = ProgressDelegate { p in
-            progressHandler?(p)
-        }
-        
         let (asyncBytes, response) = try await self.bytes(from: url)
         
         guard let httpResponse = response as? HTTPURLResponse,
-              let expectedLength = httpResponse.expectedContentLength as Int?,
+              let expectedLength = Int(exactly: httpResponse.expectedContentLength),
               expectedLength > 0 else {
             throw URLError(.badServerResponse)
         }
@@ -189,12 +189,5 @@ extension URLSession {
         
         try fileHandle.close()
         return (tempURL, response)
-    }
-}
-
-private class ProgressDelegate: NSObject {
-    let progressHandler: (Double) -> Void
-    init(progressHandler: @escaping (Double) -> Void) {
-        self.progressHandler = progressHandler
     }
 }

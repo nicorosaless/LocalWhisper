@@ -509,7 +509,6 @@ class FloatingIndicatorWindow: NSPanel {
             stopAnimationTimer()
         
         case .hovering:
-            // Hovering is handled by mouse events
             break
             
         case .recording:

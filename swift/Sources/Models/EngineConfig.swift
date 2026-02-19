@@ -38,20 +38,6 @@ enum EngineType: String, CaseIterable, Codable {
     }
 }
 
-struct VADConfig: Codable {
-    var enabled: Bool
-    var sensitivity: Int          // 0-3 (WebRTC VAD modes)
-    var silenceMs: Int            // Silence duration to trigger end
-    var activationWord: String    // Optional wake word
-    
-    static let `default` = VADConfig(
-        enabled: false,
-        sensitivity: 2,
-        silenceMs: 500,
-        activationWord: ""
-    )
-}
-
 struct EngineStatus {
     var isLoaded: Bool = false
     var isLoading: Bool = false

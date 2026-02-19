@@ -1,15 +1,14 @@
 import Foundation
 import MLX
-import MLXNN
-import MLXFast
 
 @available(macOS 14.0, *)
 class Qwen3ASREngine: TranscriptionEngine {
     let type: EngineType
     var status: EngineStatus = EngineStatus()
     
-    private var model: MLXQwen3ASRModel?
+    private var model: Qwen3ASRModel?
     private let modelId: String
+    private let cacheDirectory: URL
     
     init(type: EngineType) {
         guard type == .qwenSmall || type == .qwenLarge else {
@@ -17,6 +16,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         }
         self.type = type
         self.modelId = type.modelId ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
+        self.cacheDirectory = Self.getCacheDirectory()
     }
     
     func load(progress: @escaping (Double) -> Void) async throws {
@@ -24,8 +24,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         status.errorMessage = nil
         progress(0.0)
         
-        let cacheDir = getCacheDirectory()
-        let modelDir = cacheDir.appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
+        let modelDir = cacheDirectory.appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
         
         do {
             if !FileManager.default.fileExists(atPath: modelDir.path) {
@@ -38,7 +37,7 @@ class Qwen3ASREngine: TranscriptionEngine {
             }
             
             progress(0.9)
-            try await loadModelFromDirectory(modelDir)
+            model = try Qwen3ASRModel(directory: modelDir)
             progress(1.0)
             
             status.isLoaded = true
@@ -63,7 +62,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         }
         
         let qwenLanguage = mapLanguageToQwen(language)
-        let result = try await model.transcribe(samples: samples, language: qwenLanguage)
+        let result = try model.transcribe(samples: samples, language: qwenLanguage)
         
         return result
     }
@@ -73,7 +72,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         status.isLoaded = false
     }
     
-    private func getCacheDirectory() -> URL {
+    private static func getCacheDirectory() -> URL {
         if let customDir = ProcessInfo.processInfo.environment["QWEN3_CACHE_DIR"] {
             return URL(fileURLWithPath: customDir)
         }
@@ -96,7 +95,8 @@ class Qwen3ASREngine: TranscriptionEngine {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         
         var totalProgress = 0.0
-        let progressPerFile = 1.0 / Double(files.count + weightFiles.count)
+        let totalFiles = files.count + weightFiles.count
+        let progressPerFile = 1.0 / Double(totalFiles)
         
         for file in files {
             guard let url = URL(string: "\(baseURL)/\(file)") else { continue }
@@ -115,10 +115,6 @@ class Qwen3ASREngine: TranscriptionEngine {
             totalProgress += progressPerFile
             progress(totalProgress)
         }
-    }
-    
-    private func loadModelFromDirectory(_ directory: URL) async throws {
-        model = try MLXQwen3ASRModel(directory: directory)
     }
     
     private func parseWAVToFloatSamples(_ data: Data) -> [Float] {
@@ -156,15 +152,5 @@ class Qwen3ASREngine: TranscriptionEngine {
             "auto": "English"
         ]
         return mapping[lang] ?? "English"
-    }
-}
-
-@available(macOS 14.0, *)
-private class MLXQwen3ASRModel {
-    init(directory: URL) throws {
-    }
-    
-    func transcribe(samples: [Float], language: String) throws -> String {
-        return ""
     }
 }

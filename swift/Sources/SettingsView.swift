@@ -91,20 +91,10 @@ struct AppConfig: Codable {
     var hotkeyMode: HotkeyMode
     var autoPaste: Bool
     var modelPath: String
-    var pasteDelay: Int // milliseconds, delay after app activation before paste
+    var pasteDelay: Int
     var preferredPasteMethod: PasteMethod
     var launchAtLogin: Bool
-    
-    static let defaultConfig = AppConfig(
-        language: "es",
-        hotkey: HotkeyConfig(keyCode: 7, modifiers: ["cmd", "shift"], keyCharacter: "X"),
-        hotkeyMode: .toggle,
-        autoPaste: true,
-        modelPath: "models/ggml-small.bin",
-        pasteDelay: 200,
-        preferredPasteMethod: .auto,
-        launchAtLogin: false
-    )
+    var engineType: EngineType
     
     enum CodingKeys: String, CodingKey {
         case language
@@ -115,6 +105,57 @@ struct AppConfig: Codable {
         case pasteDelay = "paste_delay"
         case preferredPasteMethod = "preferred_paste_method"
         case launchAtLogin = "launch_at_login"
+        case engineType = "engine_type"
+    }
+    
+    init(
+        language: String = "es",
+        hotkey: HotkeyConfig = HotkeyConfig(keyCode: 7, modifiers: ["cmd", "shift"], keyCharacter: "X"),
+        hotkeyMode: HotkeyMode = .toggle,
+        autoPaste: Bool = true,
+        modelPath: String = "models/ggml-small.bin",
+        pasteDelay: Int = 80,
+        preferredPasteMethod: PasteMethod = .auto,
+        launchAtLogin: Bool = false,
+        engineType: EngineType = .whisperCpp
+    ) {
+        self.language = language
+        self.hotkey = hotkey
+        self.hotkeyMode = hotkeyMode
+        self.autoPaste = autoPaste
+        self.modelPath = modelPath
+        self.pasteDelay = pasteDelay
+        self.preferredPasteMethod = preferredPasteMethod
+        self.launchAtLogin = launchAtLogin
+        self.engineType = engineType
+    }
+    
+    static let defaultConfig = AppConfig()
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        language = try container.decode(String.self, forKey: .language)
+        hotkey = try container.decode(HotkeyConfig.self, forKey: .hotkey)
+        hotkeyMode = try container.decode(HotkeyMode.self, forKey: .hotkeyMode)
+        autoPaste = try container.decode(Bool.self, forKey: .autoPaste)
+        modelPath = try container.decode(String.self, forKey: .modelPath)
+        pasteDelay = try container.decode(Int.self, forKey: .pasteDelay)
+        preferredPasteMethod = try container.decode(PasteMethod.self, forKey: .preferredPasteMethod)
+        launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
+        engineType = try container.decodeIfPresent(EngineType.self, forKey: .engineType) ?? .whisperCpp
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(language, forKey: .language)
+        try container.encode(hotkey, forKey: .hotkey)
+        try container.encode(hotkeyMode, forKey: .hotkeyMode)
+        try container.encode(autoPaste, forKey: .autoPaste)
+        try container.encode(modelPath, forKey: .modelPath)
+        try container.encode(pasteDelay, forKey: .pasteDelay)
+        try container.encode(preferredPasteMethod, forKey: .preferredPasteMethod)
+        try container.encode(launchAtLogin, forKey: .launchAtLogin)
+        try container.encode(engineType, forKey: .engineType)
     }
 }
 
@@ -417,6 +458,15 @@ struct SettingsView: View {
                 // Settings content
                 ScrollView {
                     VStack(spacing: 20) {
+                        // Engine Section
+                        settingsSection(title: "Transcription Engine") {
+                            VStack(spacing: 12) {
+                                ForEach(EngineType.allCases, id: \.self) { engine in
+                                    engineButton(engine: engine)
+                                }
+                            }
+                        }
+                        
                         // Language Section
                         settingsSection(title: "Language") {
                             HStack {
@@ -529,7 +579,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .frame(width: 420, height: 480)
+        .frame(width: 420, height: 560)
     }
     
     private func settingsSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -573,13 +623,49 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
     }
+    
+    private func engineButton(engine: EngineType) -> some View {
+        Button(action: { config.engineType = engine }) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(engine.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(config.engineType == engine ? .black : .white.opacity(0.8))
+                        Text(engine.downloadSize)
+                            .font(.system(size: 10))
+                            .foregroundColor(config.engineType == engine ? .black.opacity(0.6) : .white.opacity(0.4))
+                    }
+                    Text("RTF ~\(engine.estimatedRTF)")
+                        .font(.system(size: 10))
+                        .foregroundColor(config.engineType == engine ? .black.opacity(0.5) : .white.opacity(0.3))
+                }
+                Spacer()
+                if config.engineType == engine {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.black)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(config.engineType == engine ? Color.white : Color.white.opacity(0.04))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(config.engineType == engine ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 // MARK: - Settings Window Controller
 class SettingsWindowController: NSWindowController {
     convenience init(config: AppConfig, onSave: @escaping (AppConfig) -> Void) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 560),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false

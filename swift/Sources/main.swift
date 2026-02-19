@@ -50,6 +50,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Store last active application
     var lastActiveApplication: NSRunningApplication?
     
+    // Transcription Engine
+    var activeEngine: TranscriptionEngine?
+    
     // Config
     var config: AppConfig = .defaultConfig
     let appDir: String
@@ -308,7 +311,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         saveConfig()
         
-        logDebug("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language)")
+        logDebug("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language), engine=\(config.engineType.displayName)")
+        
+        // Initialize transcription engine
+        Task { [weak self] in
+            await self?.loadEngine()
+        }
         
         // Hide Dock icon for normal operation (menu bar mode)
         NSApp.setActivationPolicy(.accessory)
@@ -613,6 +621,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func checkHotkey() {
         let modifiersMatch = checkModifiersMatch()
         
+        logDebug("🎹 checkHotkey: modifiersMatch=\(modifiersMatch), hotkeyKeyPressed=\(hotkeyKeyPressed), isRecording=\(isRecording)")
+        
         if modifiersMatch && hotkeyKeyPressed {
             // CRITICAL: Capture the frontmost app only at the START of recording
             // This prevents switching targets if the user clicks somewhere else during recording
@@ -642,13 +652,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             case .toggle:
                 if isRecording {
-                    // Toggle mode: Pressing hotkey AGAIN while recording = STOP and TRANSCRIBE
                     logDebug("⏹️ Hotkey pressed during recording - stopping and transcribing")
                     stopRecording()
                 } else {
                     startRecording()
                 }
-                // Reset flag for this cycle
                 hotkeyKeyPressed = false
             }
         }
@@ -727,11 +735,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             recorder.updateMeters()
             let power = recorder.averagePower(forChannel: 0)
-            // Convert dB to linearly scaling 0-1 range
-            // Typical noise floor is around -60dB -> map -60...0 to 0...1
+            
+            // Update UI - convert dB to linearly scaling 0-1 range
             let minDb: Float = -60.0
             let normalizedLevel = max(0, (power - minDb) / -minDb)
-            // Boost low levels slightly for better visibility
             let boostedLevel = pow(normalizedLevel, 0.8) * 1.2
             self.floatingIndicator.updateAudioLevel(min(1.0, boostedLevel))
         }
@@ -815,16 +822,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         return nil
     }
+    
+    @MainActor
+    func loadEngine() async {
+        logDebug("🔄 Loading transcription engine: \(config.engineType.displayName)")
+        
+        switch config.engineType {
+        case .whisperCpp:
+            activeEngine = WhisperCppEngine(appDir: appDir)
+        case .qwenSmall, .qwenLarge:
+            if #available(macOS 14.0, *) {
+                activeEngine = Qwen3ASREngine(type: config.engineType)
+            } else {
+                logDebug("⚠️ Qwen3 requires macOS 14.0+, falling back to whisper.cpp")
+                activeEngine = WhisperCppEngine(appDir: appDir)
+            }
+        }
+        
+        do {
+            try await activeEngine?.load(progress: { p in
+                logDebug("📥 Engine loading: \(Int(p * 100))%")
+            })
+            logDebug("✅ Engine loaded successfully")
+        } catch {
+            logDebug("❌ Failed to load engine: \(error)")
+        }
+    }
 
     func transcribe() {
         guard let audioURL = tempAudioURL else { return }
         
-
-
         logDebug("🚀 Starting transcription...")
         logDebug("📁 Audio file: \(audioURL.path)")
         logDebug("⚙️ Language: \(config.language)")
-        logDebug("🧠 Model: \(modelPath)")
+        logDebug("🧠 Engine: \(config.engineType.displayName)")
+        
+        if let engine = activeEngine, engine.status.isLoaded {
+            Task {
+                do {
+                    let text = try await engine.transcribe(audioURL: audioURL, language: config.language)
+                    await handleTranscriptionResult(text)
+                } catch {
+                    logDebug("❌ Engine transcription failed: \(error)")
+                    // Fallback to legacy whisper-cli
+                    transcribeWithWhisperCli(audioURL: audioURL)
+                }
+            }
+        } else {
+            logDebug("⚠️ Engine not loaded, using legacy whisper-cli")
+            transcribeWithWhisperCli(audioURL: audioURL)
+        }
+    }
+    
+    func transcribeWithWhisperCli(audioURL: URL) {
+        logDebug("🛠 Using whisper-cli for transcription...")
 
         guard let whisperPath = getWhisperCliPath() else {
             logDebug("❌ Error: whisper-cli not found")
@@ -920,8 +971,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(text, forType: .string)
                         
-                        // CRITICAL: Small delay to let clipboard settle in system
-                        usleep(50000) // 50ms
+                        // Small delay to let clipboard settle in system
+                        usleep(10000) // 10ms
                         
                         // Auto-paste if enabled using multi-strategy fallback
                         if self.config.autoPaste {
@@ -962,6 +1013,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+    
+    @MainActor
+    func handleTranscriptionResult(_ text: String) async {
+        if !text.isEmpty {
+            logDebug("✅ Transcription successful: \(text)")
+            
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            
+            usleep(10000)
+            
+            if config.autoPaste {
+                if let app = lastActiveApplication {
+                    logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
+                    pasteWithFallback(text: text, targetApp: app)
+                } else {
+                    logDebug("📋 Pasting blindly (No tracked app)")
+                    pasteWithFallback(text: text, targetApp: nil)
+                }
+            }
+            
+            updateStatusMenuItem("Ready")
+            floatingIndicator.setState(.idle)
+        } else {
+            logDebug("❓ No text detected in transcription")
+            updateStatusMenuItem("No text")
+            floatingIndicator.setState(.idle)
+        }
+        
+        if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+            image.isTemplate = true
+            statusItem.button?.image = image
+        }
+        
+        if let url = tempAudioURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        tempAudioURL = nil
     }
     
     func parseWhisperOutput(_ output: String) -> String {
@@ -1045,12 +1135,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 1. Activation & Verification
         if let app = targetApp {
             logDebug("🎯 Targeting PID \(app.processIdentifier) (\(app.localizedName ?? "app"))")
-            app.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            app.activate(options: [.activateAllWindows])
             
             // Wait for focus
             var attempts = 0
             while NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier && attempts < 10 {
-                usleep(50000)
+                usleep(20000)
                 attempts += 1
             }
             
@@ -1073,14 +1163,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         guard let cmdUp = CGEvent(keyboardEventSource: eventSource, virtualKey: 0x37, keyDown: false) else { return false }
         
-        // Helper to post (Targeted if possible, else Global)
         func post(_ event: CGEvent) {
             if let pid = targetPID {
                 event.postToPid(pid)
             } else {
                 event.post(tap: .cghidEventTap)
             }
-            usleep(20000) // Slightly longer 20ms delay
+            usleep(8000) // 8ms between key events
         }
         
         post(cmdDown)
@@ -1100,7 +1189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vUp.flags = .maskCommand
         
         vDown.post(tap: .cghidEventTap)
-        usleep(15000)
+        usleep(8000)
         vUp.post(tap: .cghidEventTap)
         
         logDebug("✅ Global CGEvent paste posted")
@@ -1212,7 +1301,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let targetPID: pid_t? = targetApp?.processIdentifier
         if let app = targetApp {
             logDebug("🎯 Targeting PID \(app.processIdentifier) for typing")
-            app.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            app.activate(options: [.activateAllWindows])
             usleep(UInt32(config.pasteDelay * 1000))
         }
         
@@ -1261,12 +1350,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         
-        // 1. FORCED ACTIVATION (Aggressive)
+        // 1. FORCED ACTIVATION
         logDebug("🚀 Activating target app: \(finalTarget?.localizedName ?? "Unknown")")
-        finalTarget?.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+        finalTarget?.activate(options: [.activateAllWindows])
         
         // 2. Wait for focus to settle
-        usleep(100000) // 100ms baseline delay
+        usleep(50000) // 50ms baseline delay
         
         let strategies: [(String, () -> Bool)]
         
@@ -1303,17 +1392,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         logDebug("❌ All paste strategies failed")
-    }
-    
-    // MARK: - Legacy Functions (keep for compatibility)
-    
-    func injectTextViaAX(_ text: String) -> Bool {
-        return pasteViaAccessibility(text)
-    }
-    
-    func pasteViaAppleScript(targetPID: pid_t? = nil) {
-        let app = targetPID != nil ? NSRunningApplication(processIdentifier: targetPID!) : nil
-        _ = pasteViaAppleScriptDelayed(targetApp: app)
     }
     
     @objc func quit() {
