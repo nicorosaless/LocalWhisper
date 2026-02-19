@@ -430,19 +430,146 @@ class HotkeyRecorderNSView: NSView {
     }
 }
 
+// MARK: - Qwen Download Manager
+@MainActor
+final class QwenDownloadManager: ObservableObject {
+    @Published var states: [EngineType: QwenDownloadState] = [:]
+    private var downloadTasks: [EngineType: Task<Void, Never>] = [:]
+
+    init() {
+        // Seed initial states
+        for engine in EngineType.allCases {
+            states[engine] = engine.isDownloaded() ? .downloaded : .notDownloaded
+        }
+    }
+
+    func startDownload(for engine: EngineType) {
+        guard let modelId = engine.modelId else { return }
+        guard states[engine] != .downloaded else { return }
+        if case .downloading = states[engine] { return }
+
+        states[engine] = .downloading(progress: 0)
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let cacheDir = EngineType.qwenCacheDirectory()
+                .appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
+            do {
+                try await Self.downloadFiles(modelId: modelId, to: cacheDir) { progress in
+                    Task { @MainActor [weak self] in
+                        self?.states[engine] = .downloading(progress: progress)
+                    }
+                }
+                await MainActor.run { self.states[engine] = .downloaded }
+            } catch {
+                await MainActor.run {
+                    self.states[engine] = .failed(error.localizedDescription)
+                }
+            }
+        }
+        downloadTasks[engine] = task
+    }
+
+    func cancelDownload(for engine: EngineType) {
+        downloadTasks[engine]?.cancel()
+        downloadTasks[engine] = nil
+        states[engine] = .notDownloaded
+    }
+
+    // MARK: - Download implementation (mirrors Qwen3ASREngine.downloadModel)
+    private static func downloadFiles(
+        modelId: String,
+        to directory: URL,
+        progress: @escaping (Double) -> Void
+    ) async throws {
+        let configFiles = [
+            "config.json",
+            "tokenizer_config.json",
+            "generation_config.json",
+            "preprocessor_config.json",
+            "vocab.json",
+            "merges.txt",
+            "special_tokens_map.json"
+        ]
+        let weightFiles = ["model.safetensors"]
+
+        let baseURL = "https://huggingface.co/\(modelId)/resolve/main"
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // Config files are small; weight file dominates progress
+        // Weights get 90% of progress bar, config files share the first 10%
+        let configShare = 0.10 / Double(configFiles.count)
+        var done = 0.0
+
+        for file in configFiles {
+            try Task.checkCancellation()
+            guard let url = URL(string: "\(baseURL)/\(file)") else { continue }
+            do {
+                let (localURL, _) = try await URLSession.shared.download(from: url)
+                let dest = directory.appendingPathComponent(file)
+                try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.moveItem(at: localURL, to: dest)
+            } catch {
+                // Optional files — log and continue
+                print("[QwenDownload] Warning: could not download \(file): \(error.localizedDescription)")
+            }
+            done += configShare
+            progress(done)
+        }
+
+        // Weight file — stream with URLSession delegate for byte-level progress
+        try Task.checkCancellation()
+        guard let weightURL = URL(string: "\(baseURL)/\(weightFiles[0])") else { return }
+        let dest = directory.appendingPathComponent(weightFiles[0])
+        try? FileManager.default.removeItem(at: dest)
+
+        let delegate = DownloadProgressDelegate { bytes in
+            let weightProgress = min(1.0, bytes)
+            progress(0.10 + weightProgress * 0.90)
+        }
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let (localURL, _) = try await session.download(from: weightURL)
+        try FileManager.default.moveItem(at: localURL, to: dest)
+        progress(1.0)
+    }
+}
+
+// URLSession delegate for streaming download progress
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+    private let onProgress: (Double) -> Void
+
+    init(onProgress: @escaping (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData _: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let frac = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        onProgress(frac)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        // Handled in async continuation
+    }
+}
+
 // MARK: - Settings View (Vercel/ShadCN Style)
 struct SettingsView: View {
     @State var config: AppConfig
     @State private var isRecordingHotkey = false
+    @StateObject private var downloadManager = QwenDownloadManager()
     var onSave: (AppConfig) -> Void
     var onCancel: () -> Void
-    
+
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottom) {
             // Pure black background
             Color(red: 0.03, green: 0.03, blue: 0.03)
                 .ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Minimal header
                 HStack {
@@ -454,7 +581,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 24)
                 .padding(.bottom, 20)
-                
+
                 // Settings content
                 ScrollView {
                     VStack(spacing: 20) {
@@ -466,7 +593,7 @@ struct SettingsView: View {
                                 }
                             }
                         }
-                        
+
                         // Language Section
                         settingsSection(title: "Language") {
                             HStack {
@@ -484,7 +611,7 @@ struct SettingsView: View {
                                 .tint(.white)
                             }
                         }
-                        
+
                         // General Section
                         settingsSection(title: "General") {
                             HStack {
@@ -497,7 +624,7 @@ struct SettingsView: View {
                                     .labelsHidden()
                             }
                         }
-                        
+
                         // Hotkey Section
                         settingsSection(title: "Shortcut") {
                             VStack(spacing: 16) {
@@ -514,15 +641,15 @@ struct SettingsView: View {
                                     HotkeyRecorderView(hotkey: $config.hotkey, isRecording: $isRecordingHotkey)
                                         .frame(width: 140, height: 36)
                                 }
-                                
+
                                 Divider()
                                     .background(Color.white.opacity(0.08))
-                                
+
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text("Mode")
                                         .font(.system(size: 13))
                                         .foregroundColor(.white.opacity(0.5))
-                                    
+
                                     HStack(spacing: 8) {
                                         modeButton(mode: .pushToTalk, title: "Push to Talk", subtitle: "Hold to record")
                                         modeButton(mode: .toggle, title: "Toggle", subtitle: "Press to start/stop")
@@ -534,12 +661,12 @@ struct SettingsView: View {
                     .padding(.horizontal, 24)
                     .padding(.vertical, 8)
                 }
-                
+
                 // Footer Buttons
                 VStack(spacing: 0) {
                     Divider()
                         .background(Color.white.opacity(0.08))
-                    
+
                     HStack(spacing: 12) {
                         Button(action: { onCancel() }) {
                             Text("Cancel")
@@ -556,9 +683,9 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape)
-                        
+
                         Spacer()
-                        
+
                         Button(action: { onSave(config) }) {
                             HStack(spacing: 6) {
                                 Text("Save")
@@ -578,10 +705,84 @@ struct SettingsView: View {
                     .padding(24)
                 }
             }
+
+            // Download toast — shown when any Qwen engine is actively downloading
+            downloadToast
         }
         .frame(width: 420, height: 560)
     }
-    
+
+    // MARK: - Download Toast
+
+    @ViewBuilder
+    private var downloadToast: some View {
+        let activeDownload: (engine: EngineType, progress: Double)? = {
+            for engine in [EngineType.qwenSmall, .qwenLarge] {
+                if case .downloading(let p) = downloadManager.states[engine] {
+                    return (engine, p)
+                }
+            }
+            return nil
+        }()
+
+        if let active = activeDownload {
+            VStack(spacing: 0) {
+                // Thin progress bar at top of toast
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Color.white.opacity(0.08)
+                        Color.white
+                            .frame(width: geo.size.width * CGFloat(active.progress))
+                            .animation(.linear(duration: 0.2), value: active.progress)
+                    }
+                }
+                .frame(height: 2)
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Downloading \(active.engine.displayName)…")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white)
+                        Text("\(Int(active.progress * 100))% of \(active.engine.downloadSize)")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    Spacer()
+                    Button(action: { downloadManager.cancelDownload(for: active.engine) }) {
+                        Text("Cancel")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.08))
+                            .cornerRadius(5)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .background(
+                Color(red: 0.08, green: 0.08, blue: 0.08)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+                    .cornerRadius(10)
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 88)  // sits above the Save/Cancel footer
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: activeDownload != nil)
+        }
+    }
+
+    // MARK: - Sub-views
+
     private func settingsSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
@@ -589,7 +790,7 @@ struct SettingsView: View {
                 .foregroundColor(.white.opacity(0.4))
                 .textCase(.uppercase)
                 .tracking(0.5)
-            
+
             content()
         }
         .padding(16)
@@ -601,7 +802,7 @@ struct SettingsView: View {
                 .stroke(Color.white.opacity(0.06), lineWidth: 1)
         )
     }
-    
+
     private func modeButton(mode: HotkeyMode, title: String, subtitle: String) -> some View {
         Button(action: { config.hotkeyMode = mode }) {
             VStack(spacing: 3) {
@@ -623,38 +824,108 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     private func engineButton(engine: EngineType) -> some View {
-        Button(action: { config.engineType = engine }) {
+        let isSelected = config.engineType == engine
+        let dlState = downloadManager.states[engine] ?? (engine.isDownloaded() ? .downloaded : .notDownloaded)
+
+        return Button(action: {
+            config.engineType = engine
+            // If it's a Qwen engine and not yet downloaded, start the download
+            if engine.modelId != nil {
+                switch dlState {
+                case .notDownloaded, .failed:
+                    downloadManager.startDownload(for: engine)
+                default:
+                    break
+                }
+            }
+        }) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text(engine.displayName)
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(config.engineType == engine ? .black : .white.opacity(0.8))
+                            .foregroundColor(isSelected ? .black : .white.opacity(0.8))
                         Text(engine.downloadSize)
                             .font(.system(size: 10))
-                            .foregroundColor(config.engineType == engine ? .black.opacity(0.6) : .white.opacity(0.4))
+                            .foregroundColor(isSelected ? .black.opacity(0.6) : .white.opacity(0.4))
                     }
-                    Text("RTF ~\(engine.estimatedRTF)")
-                        .font(.system(size: 10))
-                        .foregroundColor(config.engineType == engine ? .black.opacity(0.5) : .white.opacity(0.3))
+                    HStack(spacing: 6) {
+                        Text("RTF ~\(engine.estimatedRTF)")
+                            .font(.system(size: 10))
+                            .foregroundColor(isSelected ? .black.opacity(0.5) : .white.opacity(0.3))
+                        // Download status badge
+                        if engine.modelId != nil {
+                            switch dlState {
+                            case .notDownloaded:
+                                Text("Not downloaded")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(isSelected ? .black.opacity(0.4) : .white.opacity(0.25))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.white.opacity(isSelected ? 0.15 : 0.05))
+                                    .cornerRadius(3)
+                            case .downloading(let p):
+                                Text("\(Int(p * 100))%")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(isSelected ? .black.opacity(0.5) : .white.opacity(0.4))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.white.opacity(0.1))
+                                    .cornerRadius(3)
+                            case .downloaded:
+                                EmptyView()
+                            case .failed:
+                                Text("Failed — tap to retry")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(.red.opacity(0.8))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.red.opacity(0.1))
+                                    .cornerRadius(3)
+                            }
+                        }
+                    }
                 }
                 Spacer()
-                if config.engineType == engine {
-                    Image(systemName: "checkmark.circle.fill")
+                // Right-side indicator
+                switch dlState {
+                case .downloaded:
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.black)
+                    } else {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.3))
+                    }
+                case .downloading(let p):
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.15), lineWidth: 2)
+                        Circle()
+                            .trim(from: 0, to: CGFloat(p))
+                            .stroke(isSelected ? Color.black : Color.white, lineWidth: 2)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.linear(duration: 0.2), value: p)
+                    }
+                    .frame(width: 16, height: 16)
+                case .notDownloaded, .failed:
+                    Image(systemName: "arrow.down.circle")
                         .font(.system(size: 14))
-                        .foregroundColor(.black)
+                        .foregroundColor(isSelected ? .black.opacity(0.5) : .white.opacity(0.3))
                 }
             }
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity)
-            .frame(height: 48)
-            .background(config.engineType == engine ? Color.white : Color.white.opacity(0.04))
+            .frame(height: 52)
+            .background(isSelected ? Color.white : Color.white.opacity(0.04))
             .cornerRadius(6)
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .stroke(config.engineType == engine ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
+                    .stroke(isSelected ? Color.clear : Color.white.opacity(0.08), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

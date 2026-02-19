@@ -87,26 +87,39 @@ class Qwen3ASREngine: TranscriptionEngine {
     }
     
     private func downloadModel(to directory: URL, progress: @escaping (Double) -> Void) async throws {
-        let files = ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]
+        let configFiles = [
+            "config.json",
+            "tokenizer_config.json",
+            "generation_config.json",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "vocab.json",
+            "merges.txt"
+        ]
         let weightFiles = ["model.safetensors"]
-        
+
         let baseURL = "https://huggingface.co/\(modelId)/resolve/main"
-        
+
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        
+
         var totalProgress = 0.0
-        let totalFiles = files.count + weightFiles.count
+        let totalFiles = configFiles.count + weightFiles.count
         let progressPerFile = 1.0 / Double(totalFiles)
-        
-        for file in files {
+
+        for file in configFiles {
             guard let url = URL(string: "\(baseURL)/\(file)") else { continue }
-            let (localURL, _) = try await URLSession.shared.download(from: url)
-            try? FileManager.default.removeItem(at: directory.appendingPathComponent(file))
-            try FileManager.default.moveItem(at: localURL, to: directory.appendingPathComponent(file))
+            do {
+                let (localURL, _) = try await URLSession.shared.download(from: url)
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent(file))
+                try FileManager.default.moveItem(at: localURL, to: directory.appendingPathComponent(file))
+            } catch {
+                // Some config files may be optional — log but continue
+                print("Warning: could not download \(file): \(error.localizedDescription)")
+            }
             totalProgress += progressPerFile
             progress(totalProgress)
         }
-        
+
         for file in weightFiles {
             guard let url = URL(string: "\(baseURL)/\(file)") else { continue }
             let (localURL, _) = try await URLSession.shared.download(from: url)
