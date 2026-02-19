@@ -43,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hotkeyKeyPressed = false
     var isHotkeyDown = false // Tracks if the physical key is currently pressed
     var isAppStarted = false // Prevent multiple app starts
+    var eventTapWatchdog: Timer? // Watchdog to re-enable event tap if macOS disables it
     
     // Audio level timer
     var audioLevelTimer: Timer?
@@ -121,7 +122,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        logDebug("Config loaded: language=\(config.language), mode=\(config.hotkeyMode), launchAtLogin=\(config.launchAtLogin)")
+        // Migrate old default paste delay (200ms) to new optimized value (80ms)
+        if config.pasteDelay >= 200 {
+            config.pasteDelay = 80
+        }
+        
+        logDebug("Config loaded: language=\(config.language), mode=\(config.hotkeyMode), pasteDelay=\(config.pasteDelay)ms")
     }
     
     func saveConfig() {
@@ -510,7 +516,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             callback: eventTapCallback,
             userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         ) else {
-            logDebug("❌ Failed to create event tap")
+            logDebug("❌ Failed to create CGEvent tap — falling back to NSEvent global monitor")
+            setupNSEventFallbackMonitor()
             return
         }
         
@@ -520,6 +527,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         self.eventTap = tap
         self.runLoopSource = source
+        
+        // Watchdog: macOS can auto-disable the event tap if the callback is slow.
+        // Re-enable it every 2 seconds if it gets disabled.
+        eventTapWatchdog?.invalidate()
+        eventTapWatchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self = self, let tap = self.eventTap else { return }
+            if !CGEvent.tapIsEnabled(tap: tap) {
+                logDebug("⚠️ Event tap was disabled by macOS — re-enabling...")
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+        }
+    }
+    
+    func setupNSEventFallbackMonitor() {
+        // Fallback when CGEvent tap cannot be created (accessibility not granted for this bundle).
+        // NSEvent global monitor works for modifier+key combos but cannot consume events (no beep suppression).
+        logDebug("⌨️ Setting up NSEvent fallback monitor for hotkey \(config.hotkey.displayString)")
+        
+        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return }
+            let keyCode = Int(event.keyCode)
+            guard keyCode == self.config.hotkey.keyCode else { return }
+            
+            var modifiers: [String] = []
+            if event.modifierFlags.contains(.command) { modifiers.append("cmd") }
+            if event.modifierFlags.contains(.control) { modifiers.append("ctrl") }
+            if event.modifierFlags.contains(.option) { modifiers.append("alt") }
+            if event.modifierFlags.contains(.shift) { modifiers.append("shift") }
+            
+            let needCmd = self.config.hotkey.modifiers.contains("cmd")
+            let needShift = self.config.hotkey.modifiers.contains("shift")
+            let needAlt = self.config.hotkey.modifiers.contains("alt")
+            let needCtrl = self.config.hotkey.modifiers.contains("ctrl")
+            
+            let match = (needCmd == modifiers.contains("cmd")) &&
+                        (needShift == modifiers.contains("shift")) &&
+                        (needAlt == modifiers.contains("alt")) &&
+                        (needCtrl == modifiers.contains("ctrl"))
+            
+            guard match else { return }
+            
+            logDebug("🎹 NSEvent fallback: hotkey detected")
+            
+            DispatchQueue.main.async {
+                if !self.isHotkeyDown {
+                    self.isHotkeyDown = true
+                    self.hotkeyKeyPressed = true
+                    self.checkHotkey()
+                }
+            }
+        }
+        
+        keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            guard let self = self else { return }
+            if Int(event.keyCode) == self.config.hotkey.keyCode {
+                self.isHotkeyDown = false
+                DispatchQueue.main.async { self.handleKeyUp() }
+            }
+        }
     }
     
     func handleEvent(type: CGEventType, event: CGEvent) -> Bool {
