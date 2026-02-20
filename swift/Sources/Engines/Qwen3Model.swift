@@ -58,9 +58,12 @@ class Qwen3ASRModel {
 
     /// Transcribe raw float audio samples (16kHz, mono).
     func transcribe(samples: [Float], language: String) throws -> String {
+        logDebug("[Qwen3Model] transcribe: samples=\(samples.count)")
         // 1. Extract mel spectrogram
         let mel = melExtractor.extract(samples: samples)
+        logDebug("[Qwen3Model] mel frames=\(mel.count)")
         guard !mel.isEmpty else {
+            logDebug("[Qwen3Model] ❌ mel.isEmpty — audio is too short or silent")
             throw ModelError.invalidAudio
         }
 
@@ -72,9 +75,9 @@ class Qwen3ASRModel {
         // 2. Encode audio -> [numAudioTokens, textHiddenSize]
         let audioFeatures = audioTower.forward(melArray)
         MLX.eval(audioFeatures)
-        NSLog("[Qwen3Model] audioFeatures shape: \(audioFeatures.shape), ndim=\(audioFeatures.ndim)")
+        logDebug("[Qwen3Model] audioFeatures shape: \(audioFeatures.shape), ndim=\(audioFeatures.ndim)")
         guard audioFeatures.ndim >= 1 else {
-            NSLog("[Qwen3Model] ❌ audioFeatures is 0-dim — audio tower returned scalar!")
+            logDebug("[Qwen3Model] ❌ audioFeatures is 0-dim — audio tower returned scalar!")
             throw ModelError.invalidAudio
         }
         let numAudioTokens = audioFeatures.shape[0]
@@ -128,9 +131,10 @@ class Qwen3ASRModel {
 
         // Guard against degenerate logits from GPU
         guard logits.ndim >= 2 else {
-            NSLog("[Qwen3Model] ❌ prefill logits are degenerate (ndim=\(logits.ndim)) — aborting")
+            logDebug("[Qwen3Model] ❌ prefill logits are degenerate (ndim=\(logits.ndim)) — aborting")
             throw ModelError.invalidAudio
         }
+        logDebug("[Qwen3Model] prefill logits shape=\(logits.shape)")
 
         // 6. Autoregressive decode
         let maxNewTokens = 512

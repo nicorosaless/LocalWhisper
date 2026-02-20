@@ -15,7 +15,7 @@ private func installMLXLoggingErrorHandler() {
     // (non-task-local) handler that fires from MLX's background eval threads.
     setErrorHandler { message, _ in
         let msg = message.map { String(cString: $0) } ?? "(unknown MLX error)"
-        NSLog("[MLX ERROR] %@", msg)
+        logDebug("[MLX ERROR] \(msg)")
         mlxErrorLogBuffer.withLock { _lastMLXError = msg }
         // Do NOT call fatalError/abort — let Swift shape-guards handle the fallout.
     }
@@ -50,7 +50,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         self.modelId = type.modelId ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
         self.cacheDirectory = Self.getCacheDirectory()
         self.gpuAvailable = EngineType.hasBundledMLXMetallib
-        NSLog("[Qwen3ASREngine] gpuAvailable=\(EngineType.hasBundledMLXMetallib)")
+        logDebug("[Qwen3ASREngine] gpuAvailable=\(EngineType.hasBundledMLXMetallib)")
         // Install global logging error handler so MLX background-thread errors
         // are logged instead of calling fatalError/abort.
         installMLXLoggingErrorHandler()
@@ -92,7 +92,9 @@ class Qwen3ASREngine: TranscriptionEngine {
         }
         
         let audioData = try Data(contentsOf: audioURL)
+        logDebug("[Qwen3ASREngine] audioData size=\(audioData.count)")
         let samples = parseWAVToFloatSamples(audioData)
+        logDebug("[Qwen3ASREngine] samples count=\(samples.count)")
         
         guard !samples.isEmpty else {
             throw TranscriptionError.invalidAudioFile
@@ -100,39 +102,20 @@ class Qwen3ASREngine: TranscriptionEngine {
         
         let qwenLanguage = mapLanguageToQwen(language)
 
-        // Try GPU first if available (significantly faster).
-        // The global MLX error handler logs errors instead of crashing,
-        // so if GPU produces bad tensors our shape-guards throw ModelError
-        // and we retry on CPU.
-        if gpuAvailable {
-            NSLog("[Qwen3ASREngine] Attempting transcription on GPU")
-            mlxClearError()
-            do {
-                let result = try Device.withDefaultDevice(.gpu) {
-                    try model.transcribe(samples: samples, language: qwenLanguage)
-                }
-                if let err = mlxLastError() {
-                    NSLog("[Qwen3ASREngine] GPU MLX error: %@ — retrying on CPU", err)
-                } else {
-                    NSLog("[Qwen3ASREngine] GPU transcription succeeded")
-                    return result
-                }
-            } catch {
-                NSLog("[Qwen3ASREngine] GPU transcription threw: %@ — retrying on CPU", error.localizedDescription)
-            }
-        }
-
-        // CPU fallback (or primary path if no metallib).
-        NSLog("[Qwen3ASREngine] Running transcription on CPU")
+        // Temporarily: always use CPU to avoid GPU-poisoning-MLX-state issues.
+        // The GPU attention path produces degenerate tensors on this machine (Apple M1 Pro,
+        // macOS 26.x) and attempting GPU can corrupt MLX's scheduler state for subsequent CPU ops.
+        // TODO: re-enable GPU once text decoder attention is fixed for this GPU family.
+        logDebug("[Qwen3ASREngine] Running transcription on CPU")
         mlxClearError()
         let result = try Device.withDefaultDevice(.cpu) {
             try model.transcribe(samples: samples, language: qwenLanguage)
         }
         if let err = mlxLastError() {
-            NSLog("[Qwen3ASREngine] CPU MLX error: %@", err)
+            logDebug("[Qwen3ASREngine] CPU MLX error: \(err)")
             throw TranscriptionError.transcriptionFailed("MLX error: \(err)")
         }
-        NSLog("[Qwen3ASREngine] CPU transcription succeeded")
+        logDebug("[Qwen3ASREngine] CPU transcription succeeded")
         return result
     }
     
@@ -157,22 +140,55 @@ class Qwen3ASREngine: TranscriptionEngine {
     
     // downloadModel removed as it's handled by ModelDownloadService
     
+    /// Parse a WAV file to float samples, correctly handling variable-length headers.
+    /// AVAudioRecorder on macOS may write LIST/INFO chunks before the data chunk,
+    /// making the PCM data start beyond the standard 44-byte offset.
     private func parseWAVToFloatSamples(_ data: Data) -> [Float] {
-        let headerSize = 44
-        guard data.count > headerSize else { return [] }
-        
-        var samples: [Float] = []
-        samples.reserveCapacity((data.count - headerSize) / 2)
-        
-        var i = headerSize
-        while i + 1 < data.count {
-            let low = UInt8(data[i])
-            let high = UInt8(data[i + 1])
-            let intSample = Int16(low) | (Int16(high) << 8)
-            samples.append(Float(intSample) / 32768.0)
-            i += 2
+        // Minimum valid WAV: "RIFF" + 4 + "WAVE" = 12 bytes
+        guard data.count > 44 else { return [] }
+
+        // Find the "data" chunk by scanning the RIFF chunk list.
+        // RIFF layout: [RIFF 4B][fileSize 4B][WAVE 4B] then chunks:
+        //              [chunkId 4B][chunkSize 4B][chunkData ...]
+        var offset = 12  // skip RIFF header
+
+        var dataStart = -1
+        var dataSize  = 0
+
+        while offset + 8 <= data.count {
+            let id = String(bytes: data[offset..<offset+4], encoding: .ascii) ?? ""
+            let chunkSize = Int(data[offset+4]) |
+                            Int(data[offset+5]) << 8 |
+                            Int(data[offset+6]) << 16 |
+                            Int(data[offset+7]) << 24
+            offset += 8
+            if id == "data" {
+                dataStart = offset
+                dataSize  = min(chunkSize, data.count - offset)
+                break
+            }
+            // Skip this chunk (pad to even boundary)
+            offset += chunkSize + (chunkSize & 1)
         }
-        
+
+        guard dataStart >= 0, dataSize >= 2 else {
+            logDebug("[Qwen3ASREngine] ❌ No 'data' chunk found in WAV (size \(data.count))")
+            return []
+        }
+
+        let nSamples = dataSize / 2
+        var samples = [Float]()
+        samples.reserveCapacity(nSamples)
+
+        for i in 0..<nSamples {
+            let byteOffset = dataStart + i * 2
+            let low  = UInt8(data[byteOffset])
+            let high = UInt8(data[byteOffset + 1])
+            let intSample = Int16(bitPattern: UInt16(low) | (UInt16(high) << 8))
+            samples.append(Float(intSample) / 32768.0)
+        }
+
+        logDebug("[Qwen3ASREngine] WAV parsed: dataStart=\(dataStart) nSamples=\(nSamples) duration=\(String(format: "%.2f", Double(nSamples)/16000.0))s")
         return samples
     }
     
