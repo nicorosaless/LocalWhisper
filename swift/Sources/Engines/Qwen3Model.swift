@@ -126,6 +126,12 @@ class Qwen3ASRModel {
         var logits = textDecoder.forward(embeddings, kvCaches: kvCaches, offset: 0)
         MLX.eval(logits)
 
+        // Guard against degenerate logits from GPU
+        guard logits.ndim >= 2 else {
+            NSLog("[Qwen3Model] ❌ prefill logits are degenerate (ndim=\(logits.ndim)) — aborting")
+            throw ModelError.invalidAudio
+        }
+
         // 6. Autoregressive decode
         let maxNewTokens = 512
         var generatedIds: [Int] = []
@@ -140,6 +146,7 @@ class Qwen3ASRModel {
             let tokenEmbed = textDecoder.embed([Int32(nextToken)])
             logits = textDecoder.forward(tokenEmbed, kvCaches: kvCaches, offset: currentOffset)
             MLX.eval(logits)
+            guard logits.ndim >= 2 else { break }
             nextToken = argmaxInt(logits[0, 0...])
             currentOffset += 1
         }

@@ -45,8 +45,15 @@ class AudioTower {
 
     /// Forward pass.
     /// - Parameter mel: [T, nMels] float array
-    /// - Returns: [T', outDim] audio features
+    /// - Returns: [T', outDim] audio features, or zeros([1, dModel]) on MLX error
     func forward(_ mel: MLXArray) -> MLXArray {
+        let fallback = MLX.zeros([1, dModel], type: Float.self)
+
+        guard mel.ndim >= 2 else {
+            NSLog("[AudioTower] ❌ mel ndim < 2: \(mel.shape)")
+            return fallback
+        }
+
         // mel: [T, 128]  ->  [1, T, 128, 1] for Conv2D (NHWC)
         var x = mel.reshaped([1, mel.shape[0], mel.shape[1], 1])
         NSLog("[AudioTower] mel shape: \(mel.shape), x after reshape: \(x.shape)")
@@ -54,33 +61,63 @@ class AudioTower {
         x = conv2d1.forward(x)
         MLX.eval(x)
         NSLog("[AudioTower] after conv2d1: \(x.shape)")
+        guard x.ndim == 4 else {
+            NSLog("[AudioTower] ❌ conv2d1 output ndim != 4: \(x.shape)")
+            return fallback
+        }
         x = geluApprox(x)
+
         x = conv2d2.forward(x)
         MLX.eval(x)
         NSLog("[AudioTower] after conv2d2: \(x.shape)")
+        guard x.ndim == 4 else {
+            NSLog("[AudioTower] ❌ conv2d2 output ndim != 4: \(x.shape)")
+            return fallback
+        }
         x = geluApprox(x)
+
         x = conv2d3.forward(x)
         MLX.eval(x)
         NSLog("[AudioTower] after conv2d3: \(x.shape)")
+        guard x.ndim == 4 else {
+            NSLog("[AudioTower] ❌ conv2d3 output ndim != 4: \(x.shape)")
+            return fallback
+        }
         x = geluApprox(x)
 
-        // Flatten spatial: [1, T/8, 16, 480] -> [T/8, 7680]
-        let t8 = x.shape[1]
-        x = x.reshaped([t8, x.shape[2] * x.shape[3]])
+        // Flatten spatial: [1, T/8, nMels/8, 480] -> [T/8, flatDim]
+        let t8   = x.shape[1]
+        let flat = x.shape[2] * x.shape[3]
+        x = x.reshaped([t8, flat])
         NSLog("[AudioTower] after flatten: \(x.shape), convOut.weight shape: \(convOut.weight.shape)")
+        guard x.ndim == 2 else {
+            NSLog("[AudioTower] ❌ flatten output ndim != 2: \(x.shape)")
+            return fallback
+        }
 
         // Project to d_model
         x = convOut.forward(x)  // [T/8, dModel]
+        MLX.eval(x)
         NSLog("[AudioTower] after convOut: \(x.shape)")
+        guard x.ndim == 2 else {
+            NSLog("[AudioTower] ❌ convOut output ndim != 2: \(x.shape)")
+            return fallback
+        }
 
         // Transformer encoder layers
-        for layer in encoderLayers {
+        for (i, layer) in encoderLayers.enumerated() {
             x = layer.forward(x)
+            guard x.ndim == 2 else {
+                NSLog("[AudioTower] ❌ encoder layer \(i) output ndim != 2: \(x.shape)")
+                return fallback
+            }
         }
 
         x = lnPost.forward(x)
         x = geluApprox(proj1.forward(x))
         x = proj2.forward(x)
+        MLX.eval(x)
+        NSLog("[AudioTower] final output: \(x.shape)")
 
         return x  // [T/8, outDim]
     }
@@ -348,6 +385,12 @@ class Qwen3Attention {
     }
 
     func forward(_ x: MLXArray, kvCache: GQAKVCache, offset: Int) -> MLXArray {
+        // Guard: force evaluation and check dimensions before any shape subscript access
+        MLX.eval(x)
+        guard x.ndim >= 2 else {
+            // GPU produced a degenerate tensor — return zeros to avoid Swift Array trap
+            return MLX.zeros([1, hiddenSize])
+        }
         let S = x.shape[0]
         let scale = Float(1.0 / sqrt(Double(headDim)))
 
@@ -370,6 +413,10 @@ class Qwen3Attention {
 
         // Update KV cache and get full sequences
         let (fullK, fullV) = kvCache.update(k: k, v: v)
+        MLX.eval(fullK, fullV)
+        guard fullK.ndim >= 3 else {
+            return MLX.zeros([S, hiddenSize])
+        }
         let fullLen = fullK.shape[0]
 
         // Expand KV for GQA: [fullLen, numKVHeads, headDim] -> [fullLen, numHeads, headDim]
@@ -691,6 +738,8 @@ func softmaxFn(_ x: MLXArray, axis: Int) -> MLXArray {
 
 /// Rotary Position Embedding (RoPE). Applied to [S, numHeads, headDim].
 func applyRope(_ x: MLXArray, offset: Int, theta: Float) -> MLXArray {
+    MLX.eval(x)
+    guard x.ndim >= 3 else { return x }
     let S = x.shape[0]
     let _ = x.shape[1]  // numHeads (unused — RoPE is applied per element)
     let headDim = x.shape[2]
@@ -724,6 +773,8 @@ func applyRope(_ x: MLXArray, offset: Int, theta: Float) -> MLXArray {
 /// Expand KV heads for GQA: [S, numKVHeads, headDim] -> [S, numHeads, headDim]
 func expandKV(_ x: MLXArray, repeats: Int) -> MLXArray {
     if repeats == 1 { return x }
+    MLX.eval(x)
+    guard x.ndim >= 3 else { return x }
     let S = x.shape[0]
     let numKVHeads = x.shape[1]
     let headDim = x.shape[2]
