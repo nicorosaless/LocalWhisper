@@ -37,7 +37,10 @@ class Qwen3ASREngine: TranscriptionEngine {
     private var model: Qwen3ASRModel?
     private let modelId: String
     private let cacheDirectory: URL
-    private let preferredDevice: Device
+
+    // Whether Metal/GPU is available for MLX (requires bundled metallib).
+    // We try GPU first for speed; fall back to CPU if an MLX error occurs.
+    private let gpuAvailable: Bool
     
     init(type: EngineType) {
         guard type.modelId != nil else {
@@ -46,11 +49,8 @@ class Qwen3ASREngine: TranscriptionEngine {
         self.type = type
         self.modelId = type.modelId ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
         self.cacheDirectory = Self.getCacheDirectory()
-        // Force CPU unconditionally: GPU Metal kernels cause index-out-of-range
-        // crashes deep in AudioSelfAttention.forward on macOS 26 / AGXMetalG13X.
-        // CPU is safe and deterministic; re-enable GPU once root cause is confirmed.
-        self.preferredDevice = .cpu
-        NSLog("[Qwen3ASREngine] preferredDevice=CPU (forced)")
+        self.gpuAvailable = EngineType.hasBundledMLXMetallib
+        NSLog("[Qwen3ASREngine] gpuAvailable=\(EngineType.hasBundledMLXMetallib)")
         // Install global logging error handler so MLX background-thread errors
         // are logged instead of calling fatalError/abort.
         installMLXLoggingErrorHandler()
@@ -69,7 +69,9 @@ class Qwen3ASREngine: TranscriptionEngine {
             }
             
             progress(0.9)
-            model = try Device.withDefaultDevice(preferredDevice) {
+            // Load weights on CPU — weight loading is memory-bound, not compute-bound.
+            // The device choice for forward passes is made per-transcription.
+            model = try Device.withDefaultDevice(.cpu) {
                 try Qwen3ASRModel(directory: modelDir)
             }
             progress(1.0)
@@ -96,17 +98,41 @@ class Qwen3ASREngine: TranscriptionEngine {
             throw TranscriptionError.invalidAudioFile
         }
         
-        mlxClearError()
         let qwenLanguage = mapLanguageToQwen(language)
-        let result = try Device.withDefaultDevice(preferredDevice) {
+
+        // Try GPU first if available (significantly faster).
+        // The global MLX error handler logs errors instead of crashing,
+        // so if GPU produces bad tensors our shape-guards throw ModelError
+        // and we retry on CPU.
+        if gpuAvailable {
+            NSLog("[Qwen3ASREngine] Attempting transcription on GPU")
+            mlxClearError()
+            do {
+                let result = try Device.withDefaultDevice(.gpu) {
+                    try model.transcribe(samples: samples, language: qwenLanguage)
+                }
+                if let err = mlxLastError() {
+                    NSLog("[Qwen3ASREngine] GPU MLX error: %@ — retrying on CPU", err)
+                } else {
+                    NSLog("[Qwen3ASREngine] GPU transcription succeeded")
+                    return result
+                }
+            } catch {
+                NSLog("[Qwen3ASREngine] GPU transcription threw: %@ — retrying on CPU", error.localizedDescription)
+            }
+        }
+
+        // CPU fallback (or primary path if no metallib).
+        NSLog("[Qwen3ASREngine] Running transcription on CPU")
+        mlxClearError()
+        let result = try Device.withDefaultDevice(.cpu) {
             try model.transcribe(samples: samples, language: qwenLanguage)
         }
-        
         if let err = mlxLastError() {
-            NSLog("[Qwen3ASREngine] MLX error occurred during transcription: %@", err)
+            NSLog("[Qwen3ASREngine] CPU MLX error: %@", err)
             throw TranscriptionError.transcriptionFailed("MLX error: \(err)")
         }
-        
+        NSLog("[Qwen3ASREngine] CPU transcription succeeded")
         return result
     }
     
