@@ -49,20 +49,29 @@ class AudioTower {
     func forward(_ mel: MLXArray) -> MLXArray {
         // mel: [T, 128]  ->  [1, T, 128, 1] for Conv2D (NHWC)
         var x = mel.reshaped([1, mel.shape[0], mel.shape[1], 1])
+        NSLog("[AudioTower] mel shape: \(mel.shape), x after reshape: \(x.shape)")
 
-        x = conv2d1.forward(x)          // [1, T/2, 64, 480]
+        x = conv2d1.forward(x)
+        MLX.eval(x)
+        NSLog("[AudioTower] after conv2d1: \(x.shape)")
         x = geluApprox(x)
-        x = conv2d2.forward(x)          // [1, T/4, 32, 480]
+        x = conv2d2.forward(x)
+        MLX.eval(x)
+        NSLog("[AudioTower] after conv2d2: \(x.shape)")
         x = geluApprox(x)
-        x = conv2d3.forward(x)          // [1, T/8, 16, 480]
+        x = conv2d3.forward(x)
+        MLX.eval(x)
+        NSLog("[AudioTower] after conv2d3: \(x.shape)")
         x = geluApprox(x)
 
         // Flatten spatial: [1, T/8, 16, 480] -> [T/8, 7680]
         let t8 = x.shape[1]
         x = x.reshaped([t8, x.shape[2] * x.shape[3]])
+        NSLog("[AudioTower] after flatten: \(x.shape), convOut.weight shape: \(convOut.weight.shape)")
 
         // Project to d_model
         x = convOut.forward(x)  // [T/8, dModel]
+        NSLog("[AudioTower] after convOut: \(x.shape)")
 
         // Transformer encoder layers
         for layer in encoderLayers {
@@ -142,12 +151,34 @@ class AudioSelfAttention {
     }
 
     func forward(_ x: MLXArray) -> MLXArray {
-        let T = x.shape[0]
+        // Guard: x must be 2-D [T, dModel]
+        let xShape = x.shape
+        guard xShape.count >= 1 else {
+            NSLog("[AudioSelfAttention] ❌ x has no dimensions: \(xShape)")
+            return x
+        }
+        let T = xShape[0]
         let scale = Float(1.0 / sqrt(Double(headDim)))
+        NSLog("[AudioSelfAttention] forward: T=\(T) numHeads=\(numHeads) headDim=\(headDim) dModel=\(dModel)")
 
         var q = qProj.forward(x)  // [T, dModel]
         var k = kProj.forward(x)
         var v = vProj.forward(x)
+
+        MLX.eval(q, k, v)
+        NSLog("[AudioSelfAttention] q shape: \(q.shape), k shape: \(k.shape), v shape: \(v.shape)")
+
+        // Guard reshape sizes
+        let qElem = q.shape.reduce(1, *)
+        let kElem = k.shape.reduce(1, *)
+        let vElem = v.shape.reduce(1, *)
+        guard qElem == T * numHeads * headDim,
+              kElem == T * numHeads * headDim,
+              vElem == T * numHeads * headDim else {
+            NSLog("[AudioSelfAttention] ❌ Unexpected projection sizes: q=\(qElem) k=\(kElem) v=\(vElem), expected \(T * numHeads * headDim)")
+            // Return zeros rather than crashing
+            return MLX.zeros([T, dModel], type: Float.self)
+        }
 
         // Reshape to [T, numHeads, headDim] then [numHeads, T, headDim]
         q = q.reshaped([T, numHeads, headDim]).transposed(0, 1).reshaped([1, numHeads, T, headDim])
@@ -155,8 +186,12 @@ class AudioSelfAttention {
         v = v.reshaped([T, numHeads, headDim]).transposed(0, 1).reshaped([1, numHeads, T, headDim])
 
         var scores = MLX.matmul(q, k.transposed(-2, -1)) * MLXArray(scale)
+        MLX.eval(scores)
+        NSLog("[AudioSelfAttention] scores shape: \(scores.shape)")
         scores = softmaxFn(scores, axis: -1)
         var out = MLX.matmul(scores, v)  // [1, numHeads, T, headDim]
+        MLX.eval(out)
+        NSLog("[AudioSelfAttention] out shape before reshape: \(out.shape)")
         out = out.reshaped([T, dModel])
 
         return outProj.forward(out)
@@ -449,20 +484,28 @@ class QuantizedLinear {
         let numGroups = inDim / groupSize
 
         // Convert U32 to int array and unpack nibbles
+        // NOTE: call asArray ONCE outside the loop — not once per row (O(outDim) copies)
         let w32 = weight.asArray(UInt32.self)
+        let scaleFlat = scales.asArray(Float.self)   // [outDim * numGroups]
+        let biasFlat = biases.asArray(Float.self)    // [outDim * numGroups]
         var unpacked = [Float](repeating: 0, count: outDim * inDim)
 
+        let expectedW32 = outDim * inDimPacked
+        let expectedSB  = outDim * numGroups
+        guard w32.count >= expectedW32, scaleFlat.count >= expectedSB, biasFlat.count >= expectedSB else {
+            NSLog("[QuantizedLinear] ❌ Unexpected buffer sizes: w32=\(w32.count)/\(expectedW32) scales=\(scaleFlat.count)/\(expectedSB)")
+            return MLX.zeros([outDim, inDim], type: Float.self)
+        }
+
         for row in 0..<outDim {
-            let scaleRow = scales.asArray(Float.self)
-            let biasRow = biases.asArray(Float.self)
             for col in 0..<inDimPacked {
                 let packed = w32[row * inDimPacked + col]
                 for nibble in 0..<8 {
                     let q = Int((packed >> (nibble * 4)) & 0xF)
                     let outCol = col * 8 + nibble
                     let group = outCol / groupSize
-                    let s = scaleRow[row * numGroups + group]
-                    let b = biasRow[row * numGroups + group]
+                    let s = scaleFlat[row * numGroups + group]
+                    let b = biasFlat[row * numGroups + group]
                     // affine dequant: val = q * scale + bias
                     unpacked[row * inDim + outCol] = Float(q) * s + b
                 }

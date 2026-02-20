@@ -1,6 +1,34 @@
 import Foundation
 import MLX
 
+// MARK: - Global MLX error handler
+// MLX evaluates ops on its own background scheduler thread (mlx::core::scheduler::StreamThread).
+// That thread is NOT in any Swift Task context, so @TaskLocal-based withError() handlers
+// never fire there. The default fallback is fatalError() — which causes EXC_BREAKPOINT crashes
+// that are uncatchable. We override that with a global C callback that logs instead of crashing,
+// allowing our Swift shape-guards to detect and handle failures gracefully.
+private let mlxErrorLogBuffer = NSLock()
+private var _lastMLXError: String? = nil
+
+private func installMLXLoggingErrorHandler() {
+    // setErrorHandler is deprecated but is the only way to install a truly global
+    // (non-task-local) handler that fires from MLX's background eval threads.
+    setErrorHandler { message, _ in
+        let msg = message.map { String(cString: $0) } ?? "(unknown MLX error)"
+        NSLog("[MLX ERROR] %@", msg)
+        mlxErrorLogBuffer.withLock { _lastMLXError = msg }
+        // Do NOT call fatalError/abort — let Swift shape-guards handle the fallout.
+    }
+}
+
+func mlxLastError() -> String? {
+    mlxErrorLogBuffer.withLock { _lastMLXError }
+}
+
+func mlxClearError() {
+    mlxErrorLogBuffer.withLock { _lastMLXError = nil }
+}
+
 @available(macOS 14.0, *)
 class Qwen3ASREngine: TranscriptionEngine {
     let type: EngineType
@@ -9,39 +37,46 @@ class Qwen3ASREngine: TranscriptionEngine {
     private var model: Qwen3ASRModel?
     private let modelId: String
     private let cacheDirectory: URL
+    private let preferredDevice: Device
     
     init(type: EngineType) {
-        guard type == .qwenSmall || type == .qwenLarge else {
-            fatalError("Qwen3ASREngine only supports qwenSmall or qwenLarge types")
+        guard type.modelId != nil else {
+            fatalError("Qwen3ASREngine requires an engine type with a modelId (Qwen engines only)")
         }
         self.type = type
         self.modelId = type.modelId ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
         self.cacheDirectory = Self.getCacheDirectory()
+        // Force CPU unconditionally: GPU Metal kernels cause index-out-of-range
+        // crashes deep in AudioSelfAttention.forward on macOS 26 / AGXMetalG13X.
+        // CPU is safe and deterministic; re-enable GPU once root cause is confirmed.
+        self.preferredDevice = .cpu
+        NSLog("[Qwen3ASREngine] preferredDevice=CPU (forced)")
+        // Install global logging error handler so MLX background-thread errors
+        // are logged instead of calling fatalError/abort.
+        installMLXLoggingErrorHandler()
     }
     
     func load(progress: @escaping (Double) -> Void) async throws {
         status.isLoading = true
         status.errorMessage = nil
         progress(0.0)
-        
+
         let modelDir = cacheDirectory.appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
         
         do {
             if !FileManager.default.fileExists(atPath: modelDir.path) {
-                progress(0.1)
-                try await downloadModel(to: modelDir, progress: { p in
-                    progress(0.1 + p * 0.8)
-                })
-            } else {
-                progress(0.5)
+                throw TranscriptionError.modelLoadFailed("Model weights not found. Please download them in Settings.")
             }
             
             progress(0.9)
-            model = try Qwen3ASRModel(directory: modelDir)
+            model = try Device.withDefaultDevice(preferredDevice) {
+                try Qwen3ASRModel(directory: modelDir)
+            }
             progress(1.0)
             
             status.isLoaded = true
         } catch {
+            status.isLoading = false
             status.errorMessage = error.localizedDescription
             throw TranscriptionError.modelLoadFailed(error.localizedDescription)
         }
@@ -61,8 +96,16 @@ class Qwen3ASREngine: TranscriptionEngine {
             throw TranscriptionError.invalidAudioFile
         }
         
+        mlxClearError()
         let qwenLanguage = mapLanguageToQwen(language)
-        let result = try model.transcribe(samples: samples, language: qwenLanguage)
+        let result = try Device.withDefaultDevice(preferredDevice) {
+            try model.transcribe(samples: samples, language: qwenLanguage)
+        }
+        
+        if let err = mlxLastError() {
+            NSLog("[Qwen3ASREngine] MLX error occurred during transcription: %@", err)
+            throw TranscriptionError.transcriptionFailed("MLX error: \(err)")
+        }
         
         return result
     }
@@ -86,49 +129,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         return cacheDir
     }
     
-    private func downloadModel(to directory: URL, progress: @escaping (Double) -> Void) async throws {
-        let configFiles = [
-            "config.json",
-            "tokenizer_config.json",
-            "generation_config.json",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "vocab.json",
-            "merges.txt"
-        ]
-        let weightFiles = ["model.safetensors"]
-
-        let baseURL = "https://huggingface.co/\(modelId)/resolve/main"
-
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        var totalProgress = 0.0
-        let totalFiles = configFiles.count + weightFiles.count
-        let progressPerFile = 1.0 / Double(totalFiles)
-
-        for file in configFiles {
-            guard let url = URL(string: "\(baseURL)/\(file)") else { continue }
-            do {
-                let (localURL, _) = try await URLSession.shared.download(from: url)
-                try? FileManager.default.removeItem(at: directory.appendingPathComponent(file))
-                try FileManager.default.moveItem(at: localURL, to: directory.appendingPathComponent(file))
-            } catch {
-                // Some config files may be optional — log but continue
-                print("Warning: could not download \(file): \(error.localizedDescription)")
-            }
-            totalProgress += progressPerFile
-            progress(totalProgress)
-        }
-
-        for file in weightFiles {
-            guard let url = URL(string: "\(baseURL)/\(file)") else { continue }
-            let (localURL, _) = try await URLSession.shared.download(from: url)
-            try? FileManager.default.removeItem(at: directory.appendingPathComponent(file))
-            try FileManager.default.moveItem(at: localURL, to: directory.appendingPathComponent(file))
-            totalProgress += progressPerFile
-            progress(totalProgress)
-        }
-    }
+    // downloadModel removed as it's handled by ModelDownloadService
     
     private func parseWAVToFloatSamples(_ data: Data) -> [Float] {
         let headerSize = 44

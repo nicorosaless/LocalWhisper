@@ -71,6 +71,12 @@ class Qwen3ASRModel {
 
         // 2. Encode audio -> [numAudioTokens, textHiddenSize]
         let audioFeatures = audioTower.forward(melArray)
+        MLX.eval(audioFeatures)
+        NSLog("[Qwen3Model] audioFeatures shape: \(audioFeatures.shape), ndim=\(audioFeatures.ndim)")
+        guard audioFeatures.ndim >= 1 else {
+            NSLog("[Qwen3Model] ❌ audioFeatures is 0-dim — audio tower returned scalar!")
+            throw ModelError.invalidAudio
+        }
         let numAudioTokens = audioFeatures.shape[0]
 
         // 3. Build prompt token IDs using chat template:
