@@ -363,13 +363,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         floatingIndicator.onStartRecording = { [weak self] in
             guard let self = self else { return }
-            // Note: lastActiveApplication is continuously tracked via NSWorkspace notification
-            // So it should always contain the last app the user was using (before clicking on us)
+            // Capture the frontmost app lazily at click time.
+            // Our pill is canBecomeKey=false, so the frontmost app is still the user's app.
             if !self.isRecording {
-                if let app = self.lastActiveApplication {
-                    logDebug("🎯 [CLICK TARGET] Using tracked app: \(app.localizedName ?? "Unknown")")
+                if let frontApp = NSWorkspace.shared.frontmostApplication,
+                   frontApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+                    self.lastActiveApplication = frontApp
+                    logDebug("🎯 [CLICK TARGET] Captured app at click: \(frontApp.localizedName ?? "Unknown")")
+                } else if let app = self.lastActiveApplication {
+                    logDebug("🎯 [CLICK TARGET] Using previously tracked app: \(app.localizedName ?? "Unknown")")
                 } else {
-                    logDebug("⚠️ [CLICK] No tracked app - paste will copy to clipboard only")
+                    logDebug("⚠️ [CLICK] No target app - paste will copy to clipboard only")
                 }
             }
             self.startRecording()
@@ -440,24 +444,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup global hotkey monitor
         logDebug("⌨️ Setting up hotkey monitors...")
         setupHotkeyMonitor()
-        setupEscapeMonitor()
+        // ESC key handling is done inside the CGEvent tap callback (handleEvent),
+        // so no separate monitor is needed.
         logDebug("⌨️ Hotkey monitors set up")
         
-        // Track app activations to always know the last active app (for click-to-record)
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let self = self else { return }
-            if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
-                // Only track if it's not our own app
-                if app.bundleIdentifier != Bundle.main.bundleIdentifier {
-                    self.lastActiveApplication = app
-                    logDebug("📱 [APP SWITCH] Now tracking: \(app.localizedName ?? "Unknown")")
-                }
-            }
-        }
+        // App activation tracking removed — lastActiveApplication is now captured lazily
+        // at hotkey-press time (checkHotkey) and click-to-record time (onStartRecording).
+        // This eliminates a callback on every single app switch system-wide.
         
         logDebug("✅ startApp() completed successfully")
         logDebug("LocalWhisper Swift started.")
@@ -593,9 +586,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.runLoopSource = source
         
         // Watchdog: macOS can auto-disable the event tap if the callback is slow.
-        // Re-enable it every 2 seconds if it gets disabled.
+        // Check every 30s (was 2s) — the tap rarely gets disabled and this avoids
+        // unnecessary timer wakeups. 30s is fast enough to recover without user noticing.
         eventTapWatchdog?.invalidate()
-        eventTapWatchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        eventTapWatchdog = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             guard let self = self, let tap = self.eventTap else { return }
             if !CGEvent.tapIsEnabled(tap: tap) {
                 logDebug("⚠️ Event tap was disabled by macOS — re-enabling...")
@@ -685,6 +679,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if type == .keyDown {
             let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
             
+            // Handle ESC key (keyCode 53) to cancel recording.
+            // This replaces the leaked NSEvent.addGlobalMonitor/addLocalMonitor that
+            // previously handled ESC but could never be removed (references were discarded).
+            if keyCode == 53 && self.isRecording {
+                logDebug("⎋ ESC pressed (via CGEvent tap) - canceling recording")
+                DispatchQueue.main.async { self.cancelRecording() }
+                return true // Consume ESC during recording
+            }
+            
             if keyCode == self.config.hotkey.keyCode {
                 // Update modifiers from event flags to ensure accuracy
                 let flags = event.flags
@@ -739,25 +742,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if self.config.hotkeyMode == .pushToTalk && self.isRecording {
             logDebug("🔼 Key released in Push-to-Talk mode - stopping recording")
             self.stopRecording()
-        }
-    }
-    
-    func setupEscapeMonitor() {
-        // Monitor ESC key to cancel recording
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 && self?.isRecording == true {  // 53 = ESC key
-                logDebug("⎋ ESC pressed - canceling recording")
-                self?.cancelRecording()
-            }
-        }
-        
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 && self?.isRecording == true {  // 53 = ESC key
-                logDebug("⎋ ESC pressed - canceling recording")
-                self?.cancelRecording()
-                return nil  // Consume the event
-            }
-            return event
         }
     }
     

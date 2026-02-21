@@ -55,8 +55,7 @@ class FloatingIndicatorWindow: NSPanel {
     // Animation
     private var animationTimer: Timer?
     
-    // Hover detection using timer (avoids tracking area flickering)
-    private var hoverCheckTimer: Timer?
+    // Hover detection using NSTrackingArea (zero polling — replaced timer-based approach)
     private var tooltipWindow: NSWindow?
     private var tooltipTimer: Timer?
     private var isHovering = false
@@ -74,7 +73,6 @@ class FloatingIndicatorWindow: NSPanel {
     private let expandedHeight: CGFloat = 24
     
     // Screen tracking
-    private var screenCheckTimer: Timer?
     private var currentScreen: NSScreen?
     private var lastVisibleFrame: NSRect?
     
@@ -166,13 +164,15 @@ class FloatingIndicatorWindow: NSPanel {
         }
         
         startHoverDetection()
-        startScreenDetection()
+        // Screen detection: no polling timer needed. The pill repositions via:
+        // 1. didChangeScreenParametersNotification (monitor connect/disconnect)
+        // 2. ensureOnCorrectScreen() called lazily before recording/hover actions
         
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         
         // NOTE: Removed NSWorkspace.didActivateApplicationNotification observer that was triggering
         // screenParametersChanged() on every app switch (unnecessary — screen changes are already
-        // handled by didChangeScreenParametersNotification and the screenCheckTimer backup).
+        // handled by didChangeScreenParametersNotification and lazy ensureOnCorrectScreen()).
         
         loadSounds()
         
@@ -186,30 +186,31 @@ class FloatingIndicatorWindow: NSPanel {
     
     @objc private func screenParametersChanged() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            let screen = self?.currentScreen ?? Self.screenWithMouse()
-            self?.moveToScreen(screen)
+            self?.ensureOnCorrectScreen()
         }
     }
     
     deinit {
         animationTimer?.invalidate()
         animationTimer = nil
-        hoverCheckTimer?.invalidate()
-        hoverCheckTimer = nil
-        screenCheckTimer?.invalidate()
-        screenCheckTimer = nil
         tooltipTimer?.invalidate()
         tooltipTimer = nil
     }
     
-    private func startScreenDetection() {
-        // Check which screen has the mouse every 2s (was 50ms — saves ~20 wakeups/s).
-        // Immediate screen changes are already handled by didChangeScreenParametersNotification
-        // and the notification observers registered in init().
-        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.checkScreenChange()
+    /// Lazily check if the pill needs to move to the screen under the mouse cursor.
+    /// Called on-demand (before recording, on hover enter) instead of polling with a timer.
+    func ensureOnCorrectScreen() {
+        let newScreen = Self.screenWithMouse()
+        let newVisibleFrame = newScreen.visibleFrame
+        
+        let screenChanged = currentScreen != newScreen
+        let frameChanged = !rectsAreEqual(lastVisibleFrame, newVisibleFrame)
+        
+        if screenChanged || frameChanged {
+            currentScreen = newScreen
+            lastVisibleFrame = newVisibleFrame
+            moveToScreen(newScreen)
         }
-        RunLoop.main.add(screenCheckTimer!, forMode: .common)
     }
     
     override func rightMouseDown(with event: NSEvent) {
@@ -405,21 +406,6 @@ class FloatingIndicatorWindow: NSPanel {
                r1.size.height == r2.size.height
     }
     
-    private func checkScreenChange() {
-        let newScreen = Self.screenWithMouse()
-        let newVisibleFrame = newScreen.visibleFrame
-        
-        // Move if screen changed OR if visible frame on same screen changed
-        let screenChanged = currentScreen != newScreen
-        let frameChanged = !rectsAreEqual(lastVisibleFrame, newVisibleFrame)
-        
-        if screenChanged || frameChanged {
-            currentScreen = newScreen
-            lastVisibleFrame = newVisibleFrame
-            moveToScreen(newScreen)
-        }
-    }
-    
     private func moveToScreen(_ screen: NSScreen) {
         let fullFrame = screen.frame
         let currentWidth = self.frame.width
@@ -439,41 +425,31 @@ class FloatingIndicatorWindow: NSPanel {
     }
     
     private func startHoverDetection() {
-        // Check mouse position every 500ms (was 100ms — saves ~8 wakeups/s).
-        // NSTrackingArea is not reliable for non-activating NSPanel windows,
-        // so we keep timer-based polling but at a much lower frequency.
-        // 500ms is still responsive enough for hover expansion of a UI pill.
-        hoverCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.checkMouseHover()
+        // Use NSTrackingArea for zero-polling hover detection.
+        // .activeAlways works on non-activating NSPanel windows when combined with
+        // .inVisibleRect (auto-updates when view resizes/moves).
+        indicatorView.setupHoverTracking { [weak self] entered in
+            guard let self = self else { return }
+            if entered {
+                self.mouseDidEnterIndicator()
+            } else {
+                self.mouseDidExitIndicator()
+            }
         }
-        RunLoop.main.add(hoverCheckTimer!, forMode: .common)
     }
     
-    private func checkMouseHover() {
-        // Don't check hover during recording/transcribing
-        guard currentState == .idle || currentState == .hovering else {
-            if isHovering {
-                isHovering = false
-                hideTooltip()
-            }
-            return
-        }
-        
-        let mouseLocation = NSEvent.mouseLocation
-        
-        // Use a larger hit area for easier hovering
-        let hitArea = self.frame.insetBy(dx: -10, dy: -10)
-        let isMouseInside = hitArea.contains(mouseLocation)
-        
-        if isMouseInside && !isHovering {
-            // Mouse entered
-            isHovering = true
-            enterHoverState()
-        } else if !isMouseInside && isHovering {
-            // Mouse exited
-            isHovering = false
-            exitHoverState()
-        }
+    private func mouseDidEnterIndicator() {
+        guard currentState == .idle || currentState == .hovering else { return }
+        guard !isHovering else { return }
+        isHovering = true
+        ensureOnCorrectScreen()
+        enterHoverState()
+    }
+    
+    private func mouseDidExitIndicator() {
+        guard isHovering else { return }
+        isHovering = false
+        exitHoverState()
     }
     
     private func enterHoverState() {
@@ -608,6 +584,7 @@ class FloatingIndicatorWindow: NSPanel {
             if !silent && (previousState == .idle || previousState == .hovering) {
                 startSound?.play()
             }
+            ensureOnCorrectScreen()
             indicatorView.setState(.recording)
             startWaveformAnimation()
             animateToExpandedSize()
@@ -716,6 +693,10 @@ class IndicatorView: NSView {
     var onClicked: (() -> Void)?
     var onCancelClicked: (() -> Void)?
     
+    // Hover tracking (NSTrackingArea-based, zero polling)
+    private var hoverCallback: ((Bool) -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+    
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -724,6 +705,47 @@ class IndicatorView: NSView {
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    // MARK: - Hover Tracking (NSTrackingArea)
+    
+    func setupHoverTracking(callback: @escaping (Bool) -> Void) {
+        self.hoverCallback = callback
+        updateHoverTrackingArea()
+    }
+    
+    private func updateHoverTrackingArea() {
+        // Remove old tracking area if it exists
+        if let old = hoverTrackingArea {
+            removeTrackingArea(old)
+        }
+        // Expand the tracking rect by 10pt on each side for easier targeting of the small pill.
+        // We don't use .inVisibleRect because we need the expanded rect beyond bounds.
+        // updateTrackingAreas() is called automatically when the view moves/resizes.
+        let expandedRect = bounds.insetBy(dx: -10, dy: -10)
+        let area = NSTrackingArea(
+            rect: expandedRect,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+    
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if hoverCallback != nil {
+            updateHoverTrackingArea()
+        }
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        hoverCallback?(true)
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        hoverCallback?(false)
     }
     
     func setState(_ newState: IndicatorState) {
