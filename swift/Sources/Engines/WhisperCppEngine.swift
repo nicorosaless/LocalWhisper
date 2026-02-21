@@ -7,9 +7,9 @@ class WhisperCppEngine: TranscriptionEngine {
     private let appDir: String
     private var modelPath: String
     
-    init(appDir: String) {
+    init(appDir: String, modelPath: String) {
         self.appDir = appDir
-        self.modelPath = "\(appDir)/models/ggml-small.bin"
+        self.modelPath = modelPath
     }
     
     func load(progress: @escaping (Double) -> Void) async throws {
@@ -25,9 +25,17 @@ class WhisperCppEngine: TranscriptionEngine {
             return
         }
         
+        // If model is missing, we try to download the default small model as fallback
+        // but ideally onboarding should have handled this.
         let modelURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
         guard let url = URL(string: modelURL) else {
             throw TranscriptionError.modelLoadFailed("Invalid URL")
+        }
+        
+        // If the path was customized, we should probably not download small.bin to that path
+        // unless the path itself ends in ggml-small.bin
+        if !modelPath.hasSuffix("ggml-small.bin") {
+             throw TranscriptionError.modelLoadFailed("Model not found at \(modelPath). Please run onboarding or download the model in Settings.")
         }
         
         let modelsDir = (modelPath as NSString).deletingLastPathComponent

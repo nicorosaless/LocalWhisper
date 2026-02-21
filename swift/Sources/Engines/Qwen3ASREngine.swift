@@ -74,7 +74,7 @@ class Qwen3ASREngine: TranscriptionEngine {
         // Wait for the "ready" signal from the Python process
         logDebug("[Qwen3ASREngine] Waiting for Python model to load...")
         do {
-            let readyResponse = try waitForResponse(timeout: 120) // Model loading can take a while
+            let readyResponse = try await waitForResponseAsync(timeout: 120) // Model loading can take a while
             if let statusVal = readyResponse["status"] as? String, statusVal == "ready" {
                 logDebug("[Qwen3ASREngine] Python process ready!")
             } else if let error = readyResponse["error"] as? String {
@@ -128,8 +128,8 @@ class Qwen3ASREngine: TranscriptionEngine {
             
             stdinPipe.fileHandleForWriting.write(requestString.data(using: .utf8)!)
             
-            // Wait for response
-            let response = try waitForResponse(timeout: 60) // Transcription timeout
+            // Wait for response (async-safe — runs semaphore wait off the cooperative pool)
+            let response = try await waitForResponseAsync(timeout: 60)
             
             if let text = response["text"] as? String {
                 logDebug("[Qwen3ASREngine] Transcription result: \(text)")
@@ -243,6 +243,7 @@ class Qwen3ASREngine: TranscriptionEngine {
     
     /// Wait for a complete JSON line from stdout, with timeout.
     /// Uses a semaphore to wake immediately when data arrives instead of polling.
+    /// NOTE: This is a blocking method — only call from a non-cooperative thread (see waitForResponseAsync).
     private func waitForResponse(timeout: TimeInterval) throws -> [String: Any] {
         let deadline = DispatchTime.now() + timeout
         
@@ -282,6 +283,22 @@ class Qwen3ASREngine: TranscriptionEngine {
             let result = dataAvailable.wait(timeout: deadline)
             if result == .timedOut {
                 throw TranscriptionError.transcriptionFailed("Timeout waiting for Python response after \(Int(timeout))s")
+            }
+        }
+    }
+    
+    /// Async-safe wrapper around waitForResponse.
+    /// Runs the blocking semaphore wait on a dedicated GCD thread (outside Swift Concurrency's
+    /// cooperative thread pool) to prevent thread starvation and potential deadlocks.
+    private func waitForResponseAsync(timeout: TimeInterval) async throws -> [String: Any] {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.waitForResponse(timeout: timeout)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }

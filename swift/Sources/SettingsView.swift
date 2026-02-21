@@ -166,26 +166,6 @@ struct AppConfig: Codable {
 }
 
 // MARK: - Languages
-struct Language: Identifiable, Hashable {
-    let id: String
-    let name: String
-    
-    static let all: [Language] = [
-        Language(id: "auto", name: "Auto-detect"),
-        Language(id: "es", name: "Spanish"),
-        Language(id: "en", name: "English"),
-        Language(id: "fr", name: "French"),
-        Language(id: "de", name: "German"),
-        Language(id: "it", name: "Italian"),
-        Language(id: "pt", name: "Portuguese"),
-        Language(id: "zh", name: "Chinese"),
-        Language(id: "ja", name: "Japanese"),
-        Language(id: "ko", name: "Korean"),
-        Language(id: "ru", name: "Russian"),
-        Language(id: "ar", name: "Arabic"),
-    ]
-}
-
 // MARK: - Hotkey Recorder View
 struct HotkeyRecorderView: NSViewRepresentable {
     @Binding var hotkey: HotkeyConfig
@@ -565,10 +545,19 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
 // MARK: - Settings View (Vercel/ShadCN Style)
 struct SettingsView: View {
     @State var config: AppConfig
+    
+    @State private var expandedSection: String? = nil
+    @State private var langSearchText = ""
     @State private var isRecordingHotkey = false
     @StateObject private var downloadManager = QwenDownloadManager()
     var onSave: (AppConfig) -> Void
     var onCancel: () -> Void
+    
+    init(config: AppConfig, onSave: @escaping (AppConfig) -> Void, onCancel: @escaping () -> Void) {
+        self._config = State(initialValue: config)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -997,6 +986,7 @@ struct ContextMenuView: View {
     var onSizeChanged: ((CGSize) -> Void)?
     
     @State private var expandedSection: String? = nil
+    @State private var langSearchText = ""
     
     var body: some View {
         VStack(spacing: 0) {
@@ -1024,39 +1014,72 @@ struct ContextMenuView: View {
                     isExpanded: expandedSection == "language",
                     onTap: { toggleSection("language") }
                 ) {
+                    let filteredLanguages = Language.all.filter { 
+                        self.langSearchText.isEmpty || $0.name.localizedCaseInsensitiveContains(self.langSearchText) 
+                    }
                     let rowHeight: CGFloat = 32
-                    let contentHeight = CGFloat(Language.all.count) * rowHeight
-                    let maxListHeight: CGFloat = 200
+                    let contentHeight = CGFloat(filteredLanguages.count) * rowHeight + 40 // Add space for search
+                    let maxListHeight: CGFloat = 240
                     let listHeight = min(contentHeight, maxListHeight)
                     
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            ForEach(Language.all) { lang in
-                                Button(action: {
-                                    onSelectLanguage(lang.id)
-                                    expandedSection = nil
-                                }) {
-                                    HStack {
-                                        Text(lang.name)
-                                            .font(.system(size: 13))
-                                            .foregroundColor(config.language == lang.id ? .white : .white.opacity(0.7))
-                                        Spacer()
-                                        if config.language == lang.id {
-                                            Image(systemName: "checkmark")
-                                                .font(.system(size: 11, weight: .semibold))
-                                                .foregroundColor(.white)
-                                        }
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 8)
-                                    .background(config.language == lang.id ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                    VStack(spacing: 0) {
+                        // Search field
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.4))
+                            TextField("Search...", text: self.$langSearchText)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12))
+                                .foregroundColor(.white)
+                            if !self.langSearchText.isEmpty {
+                                Button(action: { self.langSearchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.3))
                                 }
                                 .buttonStyle(.plain)
                             }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.03))
+                        .overlay(
+                            Rectangle()
+                                .frame(height: 1)
+                                .foregroundColor(Color.white.opacity(0.08)),
+                            alignment: .bottom
+                        )
+
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                ForEach(filteredLanguages) { lang in
+                                    Button(action: {
+                                        onSelectLanguage(lang.id)
+                                        expandedSection = nil
+                                        self.langSearchText = ""
+                                    }) {
+                                        HStack {
+                                            Text(lang.name)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(config.language == lang.id ? .white : .white.opacity(0.7))
+                                            Spacer()
+                                            if config.language == lang.id {
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 11, weight: .semibold))
+                                                    .foregroundColor(.white)
+                                            }
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 8)
+                                        .background(config.language == lang.id ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
                     }
                     .frame(height: listHeight)
-                    .padding(.vertical, 4)
                     .background(Color(red: 0.06, green: 0.06, blue: 0.06))
                 }
                 

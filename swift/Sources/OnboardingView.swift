@@ -23,6 +23,8 @@ enum OnboardingStep: Int, CaseIterable {
 struct OnboardingView: View {
     @State private var currentStep: OnboardingStep = .permissions
     @State private var selectedLanguage = "en"
+    @State private var searchText = ""
+    @State private var selectedModel: WhisperModel = .small
     @State private var downloadProgress: Double = 0
     @State private var isDownloading = false
     @State private var downloadComplete = false
@@ -35,7 +37,15 @@ struct OnboardingView: View {
     
     var initialHotkeyConfig: HotkeyConfig
     var initialHotkeyMode: HotkeyMode
-    var onComplete: (HotkeyConfig, HotkeyMode) -> Void
+    var onComplete: (HotkeyConfig, HotkeyMode, String, String) -> Void
+    
+    private var filteredLanguages: [Language] {
+        if searchText.isEmpty {
+            return Language.all
+        } else {
+            return Language.all.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        }
+    }
     
     // Clean black background
     private var backgroundGradient: some View {
@@ -111,7 +121,8 @@ struct OnboardingView: View {
                             if !onboardingDoneTriggered {
                                 onboardingDoneTriggered = true
                                 saveSettings()
-                                onComplete(localHotkeyConfig, localHotkeyMode)
+                                let modelPath = ModelDownloader.shared.getModelPath(for: selectedModel)
+                                onComplete(localHotkeyConfig, localHotkeyMode, selectedLanguage, modelPath)
                             }
                         }) {
                             HStack(spacing: 8) {
@@ -158,6 +169,9 @@ struct OnboardingView: View {
             checkPermissions()
             startPermissionPolling()
         }
+        .onDisappear {
+            stopPermissionPolling()
+        }
 
     }
     
@@ -184,7 +198,7 @@ struct OnboardingView: View {
     }
     
     private func advanceStep() {
-        if currentStep == .modelDownload && !downloadComplete && !ModelDownloader.shared.isModelDownloaded() {
+        if currentStep == .modelDownload && !downloadComplete && !ModelDownloader.shared.isModelDownloaded(selectedModel) {
             startDownload()
             return
         }
@@ -305,16 +319,29 @@ struct OnboardingView: View {
                     .foregroundColor(.white.opacity(0.5))
             }
             
-            VStack(spacing: 4) {
+            VStack(spacing: 12) {
+                // Search Field
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.white.opacity(0.4))
+                    TextField("Search languages...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .foregroundColor(.white)
+                }
+                .padding(10)
+                .background(Color.white.opacity(0.05))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                )
+                .padding(.horizontal, 40)
+
                 ScrollView {
                     VStack(spacing: 4) {
-                        languageButton(code: "auto", name: "Auto-detect", flag: "✨")
-                        languageButton(code: "en", name: "English", flag: "🇺🇸")
-                        languageButton(code: "es", name: "Spanish", flag: "🇪🇸")
-                        languageButton(code: "fr", name: "French", flag: "🇫🇷")
-                        languageButton(code: "de", name: "German", flag: "🇩🇪")
-                        languageButton(code: "it", name: "Italian", flag: "🇮🇹")
-                        languageButton(code: "pt", name: "Portuguese", flag: "🇵🇹")
+                        ForEach(filteredLanguages) { lang in
+                            languageButton(code: lang.id, name: lang.name)
+                        }
                     }
                     .padding(8)
                 }
@@ -325,16 +352,14 @@ struct OnboardingView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.white.opacity(0.06), lineWidth: 1)
                 )
+                .padding(.horizontal, 40)
             }
-            .padding(.horizontal, 50)
         }
     }
     
-    private func languageButton(code: String, name: String, flag: String) -> some View {
+    private func languageButton(code: String, name: String) -> some View {
         Button(action: { selectedLanguage = code }) {
             HStack(spacing: 12) {
-                Text(flag)
-                    .font(.system(size: 24))
                 Text(name)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.white)
@@ -355,7 +380,7 @@ struct OnboardingView: View {
     
     // MARK: - Model Download View
     private var modelDownloadView: some View {
-        VStack(spacing: 32) {
+        VStack(spacing: 24) {
             Image(systemName: downloadComplete ? "checkmark.circle" : "arrow.down.circle")
                 .font(.system(size: 48, weight: .light))
                 .foregroundColor(downloadComplete ? .green : .white)
@@ -365,14 +390,27 @@ struct OnboardingView: View {
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundColor(.white)
                 
-                Text("Download the Whisper model (465 MB).\nThis is only done once.")
+                Text("Select the Whisper model to download.\nLarger models are more accurate but slower.")
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.5))
                     .multilineTextAlignment(.center)
             }
             
+            if !isDownloading && !downloadComplete {
+                VStack(spacing: 8) {
+                    ForEach(WhisperModel.allCases, id: \.self) { model in
+                        modelOption(model)
+                    }
+                }
+                .padding(.horizontal, 40)
+            }
+            
             if isDownloading {
                 VStack(spacing: 12) {
+                    Text("Downloading \(selectedModel.name)...")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white)
+                    
                     // Minimal progress bar
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 4)
@@ -393,12 +431,53 @@ struct OnboardingView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark")
                         .font(.system(size: 12, weight: .semibold))
-                    Text("Ready")
+                    Text("Ready with \(selectedModel.name) model")
                 }
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.green)
             }
         }
+    }
+
+    private func modelOption(_ model: WhisperModel) -> some View {
+        Button(action: { selectedModel = model }) {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(model.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                        Text(model.downloadSize)
+                            .font(.system(size: 10, weight: .medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(4)
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    Text(model.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                Spacer()
+                if selectedModel == model {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.white)
+                } else {
+                    Circle()
+                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                        .frame(width: 20, height: 20)
+                }
+            }
+            .padding(12)
+            .background(selectedModel == model ? Color.white.opacity(0.08) : Color.clear)
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(selectedModel == model ? Color.white.opacity(0.2) : Color.white.opacity(0.05), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
     
     // MARK: - Hotkey View
@@ -523,6 +602,9 @@ struct OnboardingView: View {
         pollingTimer?.invalidate()
         pollingTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
             DispatchQueue.main.async {
+                // Only poll during the permissions step to avoid unnecessary work
+                guard self.currentStep == .permissions else { return }
+                
                 let accStatus = AXIsProcessTrusted()
                 let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
                 
@@ -548,7 +630,7 @@ struct OnboardingView: View {
     
     private func startDownload() {
         isDownloading = true
-        ModelDownloader.shared.downloadModel { progress in
+        ModelDownloader.shared.downloadModel(selectedModel) { progress in
             DispatchQueue.main.async {
                 self.downloadProgress = progress
             }
@@ -577,7 +659,7 @@ class OnboardingWindowController {
     private var window: NSWindow?
     private var hostingView: NSHostingView<OnboardingView>?
     
-    var onComplete: ((HotkeyConfig, HotkeyMode) -> Void)?
+    var onComplete: ((HotkeyConfig, HotkeyMode, String, String) -> Void)?
     
     func show(initialHotkeyConfig: HotkeyConfig, initialHotkeyMode: HotkeyMode) {
         // print("🎯 OnboardingWindowController.show() called")
@@ -587,10 +669,10 @@ class OnboardingWindowController {
         let onboardingView = OnboardingView(
             initialHotkeyConfig: initialHotkeyConfig,
             initialHotkeyMode: initialHotkeyMode,
-            onComplete: { [weak self] hotkeyConfig, hotkeyMode in
+            onComplete: { [weak self] hotkeyConfig, hotkeyMode, language, modelPath in
                 // CRITICAL: Call onComplete FIRST (sets isAppStarted=true), THEN close window
                 // Otherwise app terminates before startApp() runs
-                self?.onComplete?(hotkeyConfig, hotkeyMode)
+                self?.onComplete?(hotkeyConfig, hotkeyMode, language, modelPath)
                 self?.close()
             }
         )

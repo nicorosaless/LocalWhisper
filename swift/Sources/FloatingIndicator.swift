@@ -170,7 +170,9 @@ class FloatingIndicatorWindow: NSPanel {
         
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenParametersChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        // NOTE: Removed NSWorkspace.didActivateApplicationNotification observer that was triggering
+        // screenParametersChanged() on every app switch (unnecessary — screen changes are already
+        // handled by didChangeScreenParametersNotification and the screenCheckTimer backup).
         
         loadSounds()
         
@@ -201,8 +203,10 @@ class FloatingIndicatorWindow: NSPanel {
     }
     
     private func startScreenDetection() {
-        // Check which screen has the mouse every 50ms for responsive dock detection
-        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        // Check which screen has the mouse every 2s (was 50ms — saves ~20 wakeups/s).
+        // Immediate screen changes are already handled by didChangeScreenParametersNotification
+        // and the notification observers registered in init().
+        screenCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.checkScreenChange()
         }
         RunLoop.main.add(screenCheckTimer!, forMode: .common)
@@ -435,8 +439,11 @@ class FloatingIndicatorWindow: NSPanel {
     }
     
     private func startHoverDetection() {
-        // Check mouse position every 100ms
-        hoverCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // Check mouse position every 500ms (was 100ms — saves ~8 wakeups/s).
+        // NSTrackingArea is not reliable for non-activating NSPanel windows,
+        // so we keep timer-based polling but at a much lower frequency.
+        // 500ms is still responsive enough for hover expansion of a UI pill.
+        hoverCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.checkMouseHover()
         }
         RunLoop.main.add(hoverCheckTimer!, forMode: .common)

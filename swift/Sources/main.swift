@@ -257,16 +257,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         
         onboardingController = OnboardingWindowController()
-        onboardingController?.onComplete = { [weak self] hotkeyConfig, hotkeyMode in
+        onboardingController?.onComplete = { [weak self] hotkeyConfig, hotkeyMode, language, modelPath in
             // CRITICAL: Set isAppStarted IMMEDIATELY (synchronously) to prevent app termination
             // when the onboarding window closes. The rest can be async.
             self?.isAppStarted = true
             
             DispatchQueue.main.async {
-                logDebug("🚀 Onboarding complete callback triggered with hotkey: \(hotkeyConfig.displayString), mode: \(hotkeyMode)")
+                logDebug("🚀 Onboarding complete: hotkey=\(hotkeyConfig.displayString), lang=\(language), model=\(modelPath)")
                 // Save the received config values
                 self?.config.hotkey = hotkeyConfig
                 self?.config.hotkeyMode = hotkeyMode
+                self?.config.language = language
+                self?.config.modelPath = modelPath
                 self?.saveConfig()
                 self?.onboardingController = nil
                 self?.startApp()
@@ -325,13 +327,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appSetupComplete = true
         isAppStarted = true
         
-        // Update model path to use downloaded model
-        if ModelDownloader.shared.isModelDownloaded() {
-            config.modelPath = ModelDownloader.shared.getModelPath()
+        // Ensure model path is absolute
+        if !config.modelPath.hasPrefix("/") {
+            // If it's a relative path, resolve it against the models directory
+            let filename = (config.modelPath as NSString).lastPathComponent
+            config.modelPath = ModelDownloader.shared.getModelsDirectory().appendingPathComponent(filename).path
         }
         
-        // Load language from UserDefaults
-        if let lang = UserDefaults.standard.string(forKey: "language") {
+        // Load language from UserDefaults if not already set
+        if config.language.isEmpty, let lang = UserDefaults.standard.string(forKey: "language") {
             config.language = lang
         }
         
@@ -653,6 +657,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         if type == .flagsChanged {
             let flags = event.flags
+            
+            // Early exit: skip processing if no hotkey-relevant modifiers are pressed
+            // AND we're not currently tracking a hotkey press (need to detect release).
+            // This avoids unnecessary work for every modifier key press system-wide.
+            let hotkeyMods = self.config.hotkey.modifiers
+            let hasRelevantModifier =
+                (hotkeyMods.contains("cmd") && flags.contains(.maskCommand)) ||
+                (hotkeyMods.contains("shift") && flags.contains(.maskShift)) ||
+                (hotkeyMods.contains("alt") && flags.contains(.maskAlternate)) ||
+                (hotkeyMods.contains("ctrl") && flags.contains(.maskControl))
+            
+            guard hasRelevantModifier || self.isHotkeyDown else { return false }
+            
             // Map CGEventFlags to NSEvent.ModifierFlags for consistency with existing logic
             var modifiers: NSEvent.ModifierFlags = []
             if flags.contains(.maskCommand) { modifiers.insert(.command) }
@@ -662,7 +679,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             self.pressedModifiers = modifiers.intersection([.command, .shift, .option, .control])
             self.checkHotkey()
-            return false // Create checks don't consume flags
+            return false // Don't consume flag change events
         }
         
         if type == .keyDown {
@@ -971,13 +988,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         switch config.engineType {
         case .whisperCpp:
-            activeEngine = WhisperCppEngine(appDir: appDir)
+            activeEngine = WhisperCppEngine(appDir: appDir, modelPath: modelPath)
         case .qwenSmall:
             if #available(macOS 14.0, *) {
                 activeEngine = Qwen3ASREngine(type: config.engineType)
             } else {
                 logDebug("⚠️ Qwen3 requires macOS 14.0+, falling back to whisper.cpp")
-                activeEngine = WhisperCppEngine(appDir: appDir)
+                activeEngine = WhisperCppEngine(appDir: appDir, modelPath: modelPath)
             }
         }
         
@@ -1113,22 +1130,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(text, forType: .string)
                         
-                        // Small delay to let clipboard settle in system
-                        usleep(10000) // 10ms
-                        
-                        // Auto-paste if enabled using multi-strategy fallback
-                        if self.config.autoPaste {
-                            if let app = self.lastActiveApplication {
-                                logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
-                                self.pasteWithFallback(text: text, targetApp: app)
-                            } else {
-                                logDebug("📋 Pasting blindly (No tracked app)")
-                                self.pasteWithFallback(text: text, targetApp: nil)
-                            }
-                        }
-                        
+                        // Update UI immediately on main thread
                         self.updateStatusMenuItem("Ready")
                         self.floatingIndicator.setState(.idle)
+                        
+                        // Auto-paste if enabled — run off main thread to avoid blocking UI with usleep
+                        if self.config.autoPaste {
+                            let targetApp = self.lastActiveApplication
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                Thread.sleep(forTimeInterval: 0.010) // 10ms clipboard settle
+                                if let app = targetApp {
+                                    logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
+                                    self.pasteWithFallback(text: text, targetApp: app)
+                                } else {
+                                    logDebug("📋 Pasting blindly (No tracked app)")
+                                    self.pasteWithFallback(text: text, targetApp: nil)
+                                }
+                            }
+                        }
                     } else {
                         logDebug("❓ No text detected in transcription")
                         self.updateStatusMenuItem("No text")
@@ -1167,20 +1186,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             
-            usleep(3000) // 3ms clipboard settle (was 10ms)
-            
-            if config.autoPaste {
-                if let app = lastActiveApplication {
-                    logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
-                    pasteWithFallback(text: text, targetApp: app)
-                } else {
-                    logDebug("📋 Pasting blindly (No tracked app)")
-                    pasteWithFallback(text: text, targetApp: nil)
-                }
-            }
-            
+            // Update UI immediately on main thread (don't block for paste)
             updateStatusMenuItem("Ready")
             floatingIndicator.setState(.idle)
+            
+            if config.autoPaste {
+                let targetApp = lastActiveApplication
+                // Move paste operations (which use usleep) off the main thread
+                // to avoid blocking the UI and the run loop.
+                DispatchQueue.global(qos: .userInitiated).async { [self] in
+                    Thread.sleep(forTimeInterval: 0.003) // 3ms clipboard settle
+                    if let app = targetApp {
+                        logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
+                        self.pasteWithFallback(text: text, targetApp: app)
+                    } else {
+                        logDebug("📋 Pasting blindly (No tracked app)")
+                        self.pasteWithFallback(text: text, targetApp: nil)
+                    }
+                }
+            }
         } else {
             logDebug("❓ No text detected in transcription")
             updateStatusMenuItem("No text")

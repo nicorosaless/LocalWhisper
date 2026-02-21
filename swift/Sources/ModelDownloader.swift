@@ -4,7 +4,6 @@ import Foundation
 class ModelDownloader {
     static let shared = ModelDownloader()
     
-    private let modelURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
     private var downloadTask: URLSessionDownloadTask?
     
     private init() {}
@@ -21,22 +20,22 @@ class ModelDownloader {
         return modelsDir
     }
     
-    func getModelPath() -> String {
-        return getModelsDirectory().appendingPathComponent("ggml-small.bin").path
+    func getModelPath(for model: WhisperModel = .small) -> String {
+        return getModelsDirectory().appendingPathComponent(model.rawValue).path
     }
     
-    func isModelDownloaded() -> Bool {
-        return FileManager.default.fileExists(atPath: getModelPath())
+    func isModelDownloaded(_ model: WhisperModel = .small) -> Bool {
+        return FileManager.default.fileExists(atPath: getModelPath(for: model))
     }
     
-    func downloadModel(progress: @escaping (Double) -> Void, completion: @escaping (Bool) -> Void) {
+    func downloadModel(_ model: WhisperModel, progress: @escaping (Double) -> Void, completion: @escaping (Bool) -> Void) {
         // Check if already downloaded
-        if isModelDownloaded() {
+        if isModelDownloaded(model) {
             completion(true)
             return
         }
         
-        guard let url = URL(string: modelURL) else {
+        guard let url = URL(string: model.downloadURL) else {
             completion(false)
             return
         }
@@ -48,7 +47,7 @@ class ModelDownloader {
             }
             
             do {
-                let destination = URL(fileURLWithPath: self.getModelPath())
+                let destination = URL(fileURLWithPath: self.getModelPath(for: model))
                 
                 // Remove existing file if any
                 try? FileManager.default.removeItem(at: destination)
@@ -57,7 +56,7 @@ class ModelDownloader {
                 try FileManager.default.moveItem(at: location, to: destination)
                 
                 #if DEBUG
-                print("Model downloaded to: \(destination.path)")
+                print("Model \(model.name) downloaded to: \(destination.path)")
                 #endif
                 completion(true)
             } catch {
