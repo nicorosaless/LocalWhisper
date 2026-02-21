@@ -46,6 +46,12 @@ echo "📦 Copying transcribe.py..."
 mkdir -p "${RESOURCES_DIR}/scripts"
 cp "${PROJECT_DIR}/scripts/transcribe.py" "${RESOURCES_DIR}/scripts/"
 
+# Copy Icon
+if [ -f "${PROJECT_DIR}/assets/AppIcon.icns" ]; then
+    echo "🎨 Copying app icon..."
+    cp "${PROJECT_DIR}/assets/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+fi
+
 # Create Info.plist
 cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
