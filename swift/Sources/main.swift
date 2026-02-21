@@ -2,6 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import AVFoundation
 import SwiftUI
+import ServiceManagement
 
 
 func getPerformanceCoreCount() -> Int {
@@ -159,9 +160,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let data = try encoder.encode(config)
             try data.write(to: URL(fileURLWithPath: configPath))
             logDebug("Config saved")
-            
-            // Sync Launch at Login state with system
-            updateLaunchAtLogin()
+            // NOTE: updateLaunchAtLogin() is NOT called here.
+            // It is called explicitly only when the launchAtLogin toggle changes in Settings,
+            // to avoid re-registering on every minor config change (language, engine, etc.).
         } catch {
             logDebug("Error saving config: \(error)")
         }
@@ -325,6 +326,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         appSetupComplete = true
+        
+        // Clean up any legacy LaunchAgent plist from old versions
+        let label = "com.nicorosaless.LocalWhisper"
+        let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        if FileManager.default.fileExists(atPath: launchAgentURL.path) {
+            try? FileManager.default.removeItem(at: launchAgentURL)
+            logDebug("🧹 Removed legacy LaunchAgent plist on startup")
+        }
         isAppStarted = true
         
         // Ensure model path is absolute
@@ -506,11 +516,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func openSettings() {
         settingsWindowController = SettingsWindowController(config: config) { [weak self] newConfig in
-            self?.config = newConfig
-            self?.saveConfig()
-            self?.updateMenu()
-            self?.floatingIndicator.hotkeyDisplayString = newConfig.hotkey.displayString
-            self?.setupHotkeyMonitor() // Re-setup with new hotkey
+            guard let self = self else { return }
+            let launchAtLoginChanged = newConfig.launchAtLogin != self.config.launchAtLogin
+            self.config = newConfig
+            self.saveConfig()
+            self.updateMenu()
+            self.floatingIndicator.hotkeyDisplayString = newConfig.hotkey.displayString
+            self.setupHotkeyMonitor() // Re-setup with new hotkey
+            // Only sync login item when that specific setting changed
+            if launchAtLoginChanged {
+                self.updateLaunchAtLogin()
+            }
         }
         settingsWindowController?.show()
     }
@@ -1231,49 +1247,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Launch at Login
     
     func updateLaunchAtLogin() {
-        let label = "com.nicorosaless.LocalWhisper"
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let launchAgentDir = homeDir.appendingPathComponent("Library/LaunchAgents")
-        let plistURL = launchAgentDir.appendingPathComponent("\(label).plist")
-        
+        // Use SMAppService (macOS 13+) — the proper system Login Items mechanism.
+        // Unlike writing a LaunchAgent plist to ~/Library/LaunchAgents, SMAppService
+        // does NOT trigger the macOS "Background Activity" notification.
         if config.launchAtLogin {
-            logDebug("🚀 Ensuring Launch Agent exists...")
-            
-            // Ensure directory exists
-            try? FileManager.default.createDirectory(at: launchAgentDir, withIntermediateDirectories: true)
-            
-            let executablePath = Bundle.main.executablePath ?? (Bundle.main.bundlePath + "/Contents/MacOS/LocalWhisper")
-            
-            let plistContent = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>Label</key>
-                <string>\(label)</string>
-                <key>ProgramArguments</key>
-                <array>
-                    <string>\(executablePath)</string>
-                </array>
-                <key>RunAtLoad</key>
-                <true/>
-                <key>KeepAlive</key>
-                <false/>
-                <key>ProcessType</key>
-                <string>Interactive</string>
-            </dict>
-            </plist>
-            """
-            
             do {
-                try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
-                logDebug("✅ Launch Agent created/updated at \(plistURL.path)")
+                try SMAppService.mainApp.register()
+                logDebug("✅ Login item registered via SMAppService")
             } catch {
-                logDebug("❌ Failed to create Launch Agent: \(error)")
+                logDebug("❌ Failed to register login item: \(error)")
             }
         } else {
-            logDebug("🛑 Removing Launch Agent...")
+            do {
+                try SMAppService.mainApp.unregister()
+                logDebug("✅ Login item unregistered via SMAppService")
+            } catch {
+                logDebug("❌ Failed to unregister login item: \(error)")
+            }
+        }
+        
+        // Clean up any legacy LaunchAgent plist we may have written before
+        let label = "com.nicorosaless.LocalWhisper"
+        let launchAgentDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents")
+        let plistURL = launchAgentDir.appendingPathComponent("\(label).plist")
+        if FileManager.default.fileExists(atPath: plistURL.path) {
             try? FileManager.default.removeItem(at: plistURL)
+            logDebug("🧹 Removed legacy LaunchAgent plist")
         }
     }
     

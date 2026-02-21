@@ -60,6 +60,9 @@ class FloatingIndicatorWindow: NSPanel {
     private var tooltipTimer: Timer?
     private var isHovering = false
     private var isHoveringX = false
+    // Suppresses spurious mouseExited events that fire when the window frame changes
+    // during expand/shrink animations (NSTrackingArea gets invalidated mid-animation).
+    private var suppressHoverExit = false
     
     // Hotkey display string (set from main.swift)
     var hotkeyDisplayString: String = "⌘⇧Space"
@@ -416,12 +419,14 @@ class FloatingIndicatorWindow: NSPanel {
         
         let newFrame = NSRect(x: newX, y: newY, width: currentWidth, height: currentHeight)
         
-        // Smooth position change
-        NSAnimationContext.runAnimationGroup { context in
+        suppressHoverExit = true
+        NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(newFrame, display: true)
-        }
+        }, completionHandler: {
+            self.suppressHoverExit = false
+        })
     }
     
     private func startHoverDetection() {
@@ -448,6 +453,7 @@ class FloatingIndicatorWindow: NSPanel {
     
     private func mouseDidExitIndicator() {
         guard isHovering else { return }
+        guard !suppressHoverExit else { return }
         isHovering = false
         exitHoverState()
     }
@@ -608,12 +614,14 @@ class FloatingIndicatorWindow: NSPanel {
         let newX = fullFrame.origin.x + (fullFrame.size.width - expandedWidth) / 2
         let newY = calculateBottomY(for: screen, dockActive: false)
         
-        // Fast, snappy animation
-        NSAnimationContext.runAnimationGroup { context in
+        suppressHoverExit = true
+        NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.08
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(NSRect(x: newX, y: newY, width: expandedWidth, height: expandedHeight), display: true)
-        }
+        }, completionHandler: {
+            self.suppressHoverExit = false
+        })
     }
     
     private func animateToIdleSize() {
@@ -622,12 +630,14 @@ class FloatingIndicatorWindow: NSPanel {
         let newX = fullFrame.origin.x + (fullFrame.size.width - idleWidth) / 2
         let newY = calculateBottomY(for: screen, dockActive: false)
         
-        // Fast, snappy animation
-        NSAnimationContext.runAnimationGroup { context in
+        suppressHoverExit = true
+        NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.1
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(NSRect(x: newX, y: newY, width: idleWidth, height: idleHeight), display: true)
-        }
+        }, completionHandler: {
+            self.suppressHoverExit = false
+        })
     }
     
     private func startWaveformAnimation() {
