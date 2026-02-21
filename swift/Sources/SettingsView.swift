@@ -975,6 +975,14 @@ class SettingsWindowController: NSWindowController {
     }
 }
 
+// MARK: - Size Preference Key for reporting content height
+struct ContentSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
 // MARK: - Context Menu Popover View
 struct ContextMenuView: View {
     var config: AppConfig
@@ -986,6 +994,7 @@ struct ContextMenuView: View {
     var onSelectMicrophone: (String) -> Void
     var onOpenSettings: () -> Void
     var onQuit: () -> Void
+    var onSizeChanged: ((CGSize) -> Void)?
     
     @State private var expandedSection: String? = nil
     
@@ -1270,16 +1279,23 @@ struct ContextMenuView: View {
             .background(Color(red: 0.03, green: 0.03, blue: 0.03))
         }
         .frame(width: 260)
-        .background(Color(red: 0.03, green: 0.03, blue: 0.03))
+        .background(
+            GeometryReader { geo in
+                Color(red: 0.03, green: 0.03, blue: 0.03)
+                    .preference(key: ContentSizeKey.self, value: geo.size)
+            }
+        )
+        .onPreferenceChange(ContentSizeKey.self) { newSize in
+            onSizeChanged?(newSize)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
     
     private func toggleSection(_ section: String) {
-        withAnimation(.easeInOut(duration: 0.15)) {
-            if expandedSection == section {
-                expandedSection = nil
-            } else {
-                expandedSection = section
-            }
+        if expandedSection == section {
+            expandedSection = nil
+        } else {
+            expandedSection = section
         }
     }
 }
@@ -1331,7 +1347,6 @@ class ContextMenuPopoverController: NSObject {
     private var config: AppConfig = .defaultConfig
     private var availableMicrophones: [(name: String, id: String)] = []
     private var hostingController: NSHostingController<ContextMenuView>?
-    private var sizeObserver: NSKeyValueObservation?
     
     var onSelectLanguage: ((String) -> Void)?
     var onSelectEngine: ((EngineType) -> Void)?
@@ -1341,28 +1356,25 @@ class ContextMenuPopoverController: NSObject {
     var onQuit: (() -> Void)?
     var onClose: (() -> Void)?
     
-    func refreshConfig(_ newConfig: AppConfig) {
-        self.config = newConfig
-        guard let hostingController = hostingController else { return }
-        
-        let newMenuView = ContextMenuView(
-            config: newConfig,
+    private func makeMenuView(config: AppConfig) -> ContextMenuView {
+        return ContextMenuView(
+            config: config,
             availableMicrophones: availableMicrophones,
             onSelectLanguage: { [weak self] (langId: String) in
                 self?.onSelectLanguage?(langId)
-                self?.refreshConfig(self?.config ?? newConfig)
+                self?.refreshConfig(self?.config ?? config)
             },
             onSelectEngine: { [weak self] (engine: EngineType) in
                 self?.onSelectEngine?(engine)
-                self?.refreshConfig(self?.config ?? newConfig)
+                self?.refreshConfig(self?.config ?? config)
             },
             onSelectMode: { [weak self] (mode: HotkeyMode) in
                 self?.onSelectMode?(mode)
-                self?.refreshConfig(self?.config ?? newConfig)
+                self?.refreshConfig(self?.config ?? config)
             },
             onSelectMicrophone: { [weak self] (micId: String) in
                 self?.onSelectMicrophone?(micId)
-                self?.refreshConfig(self?.config ?? newConfig)
+                self?.refreshConfig(self?.config ?? config)
             },
             onOpenSettings: { [weak self] in
                 self?.onOpenSettings?()
@@ -1371,32 +1383,44 @@ class ContextMenuPopoverController: NSObject {
             onQuit: { [weak self] in
                 self?.onQuit?()
                 self?.close()
+            },
+            onSizeChanged: { [weak self] newSize in
+                self?.resizePanelToFit(newSize)
             }
         )
-        
-        hostingController.rootView = newMenuView
-        
-        // Resize the panel to fit the new content
-        resizePanelToFit()
     }
     
-    private func resizePanelToFit() {
-        guard let panel = popover, let hc = hostingController else { return }
+    func refreshConfig(_ newConfig: AppConfig) {
+        self.config = newConfig
+        guard let hostingController = hostingController else { return }
+        hostingController.rootView = makeMenuView(config: newConfig)
+    }
+    
+    private func resizePanelToFit(_ contentSize: CGSize) {
+        guard let panel = popover else { return }
         
-        let fittingSize = hc.view.fittingSize
-        let panelWidth: CGFloat = 260
-        let newHeight = max(200, fittingSize.height)
+        let newHeight = contentSize.height
+        let newWidth = contentSize.width
         
-        // Clamp to screen bounds - leave some margin
-        let screen = panel.screen ?? NSScreen.main
-        let maxHeight = (screen?.visibleFrame.height ?? 800) - 40
-        let clampedHeight = min(newHeight, maxHeight)
-        
-        // Panel grows upward from the pill anchor point
+        // Keep the bottom edge of the panel fixed at pillAnchorY.
+        // In macOS coordinates, origin.y is the bottom-left corner.
+        // So we keep origin.y = pillAnchorY and just change the height.
+        // The panel grows/shrinks upward (top edge moves).
+        let currentFrame = panel.frame
         let newOriginY = pillAnchorY
-        let oldFrame = panel.frame
+        let newOriginX = currentFrame.origin.x
         
-        panel.setFrame(NSRect(x: oldFrame.origin.x, y: newOriginY, width: panelWidth, height: clampedHeight), display: true, animate: false)
+        let newFrame = NSRect(
+            x: newOriginX,
+            y: newOriginY,
+            width: newWidth,
+            height: newHeight
+        )
+        
+        // Only resize if there's a meaningful change (avoid flicker from tiny updates)
+        if abs(currentFrame.height - newHeight) > 1 || abs(currentFrame.width - newWidth) > 1 {
+            panel.setFrame(newFrame, display: true, animate: false)
+        }
     }
     
     func show(
@@ -1410,42 +1434,15 @@ class ContextMenuPopoverController: NSObject {
         
         close()
         
-        let menuView = ContextMenuView(
-            config: config,
-            availableMicrophones: microphones,
-            onSelectLanguage: { [weak self] (langId: String) in
-                self?.onSelectLanguage?(langId)
-                self?.refreshConfig(self?.config ?? config)
-            },
-            onSelectEngine: { [weak self] (engine: EngineType) in
-                self?.onSelectEngine?(engine)
-                self?.refreshConfig(self?.config ?? config)
-            },
-            onSelectMode: { [weak self] (mode: HotkeyMode) in
-                self?.onSelectMode?(mode)
-                self?.refreshConfig(self?.config ?? config)
-            },
-            onSelectMicrophone: { [weak self] (micId: String) in
-                self?.onSelectMicrophone?(micId)
-                self?.refreshConfig(self?.config ?? config)
-            },
-            onOpenSettings: { [weak self] in
-                self?.onOpenSettings?()
-                self?.close()
-            },
-            onQuit: { [weak self] in
-                self?.onQuit?()
-                self?.close()
-            }
-        )
+        let menuView = makeMenuView(config: config)
         
         let hc = NSHostingController(rootView: menuView)
         self.hostingController = hc
         
-        // Let SwiftUI compute the ideal size
-        let fittingSize = hc.view.fittingSize
+        // Let SwiftUI determine the initial fitting size
         let panelWidth: CGFloat = 260
-        let panelHeight = max(200, fittingSize.height)
+        let fittingSize = hc.view.fittingSize
+        let panelHeight = max(fittingSize.height, 100) // Minimum safety height
         hc.view.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
         
         // Create a panel that floats above everything
@@ -1463,22 +1460,17 @@ class ContextMenuPopoverController: NSObject {
         panel.contentViewController = hostingController
         
         // Position above the pill
+        // In macOS coords: origin.y is the BOTTOM edge of the panel.
+        // pillAnchorY = just above the pill. Panel grows upward from there.
         if let window = view.window {
             let pillFrame = view.convert(rect, to: nil)
             let screenFrame = window.convertToScreen(pillFrame)
             
-            let panelX = screenFrame.midX - 130 // Center horizontally
-            let panelY = screenFrame.maxY + 8 // Above the pill with 8px gap
-            self.pillAnchorY = panelY // Remember anchor for resizing
+            let panelX = screenFrame.midX - panelWidth / 2 // Center horizontally
+            let panelY = screenFrame.maxY + 8 // Bottom of panel sits 8px above the pill
+            self.pillAnchorY = panelY
             
             panel.setFrameOrigin(NSPoint(x: panelX, y: panelY))
-        }
-        
-        // Observe intrinsicContentSize changes to resize panel when sections expand/collapse
-        sizeObserver = hc.view.observe(\.intrinsicContentSize, options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.resizePanelToFit()
-            }
         }
         
         // Add click-outside monitor
@@ -1508,8 +1500,6 @@ class ContextMenuPopoverController: NSObject {
             NSEvent.removeMonitor(monitor)
             clickMonitor = nil
         }
-        sizeObserver?.invalidate()
-        sizeObserver = nil
         popover?.close()
         popover = nil
         hostingController = nil
