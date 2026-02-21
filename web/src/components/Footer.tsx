@@ -25,7 +25,7 @@ const Footer = () => {
           </div>
 
           <p className="text-sm text-muted-foreground">
-            © 2025 LocalWhisper. All rights reserved.
+            © 2026 LocalWhisper. All rights reserved.
           </p>
         </div>
       </div>

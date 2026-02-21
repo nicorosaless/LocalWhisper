@@ -3,18 +3,18 @@ import { Card } from "@/components/ui/card";
 const steps = [
   {
     number: "01",
-    title: "Install Promptlo",
-    description: "Quick setup with Ollama integration in minutes",
+    title: "Install LocalWhisper",
+    description: "Download the DMG and move it to your Applications folder",
   },
   {
     number: "02",
-    title: "Set Your Hotkey",
-    description: "Configure your preferred keyboard shortcut",
+    title: "Press and Hold",
+    description: "Hold your hotkey (Caps Lock by default) to start recording",
   },
   {
     number: "03",
-    title: "Optimize Anywhere",
-    description: "Select text and press your hotkey to optimize instantly",
+    title: "Release to Type",
+    description: "Release the key and LocalWhisper types the transcription instantly",
   },
 ];
 

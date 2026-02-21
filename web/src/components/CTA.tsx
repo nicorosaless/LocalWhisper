@@ -21,11 +21,11 @@ const CTA = () => {
             className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-10 py-7 text-lg rounded-xl shadow-lg hover:shadow-primary/50 transition-all"
           >
             <Download className="mr-2 w-5 h-5" />
-            Download Promptlo
+            Download LocalWhisper
           </Button>
           
           <p className="text-sm text-muted-foreground mt-6">
-            Free and open source • Works on macOS, Windows, and Linux
+            Free and open source • Currently optimized for macOS
           </p>
         </div>
       </div>

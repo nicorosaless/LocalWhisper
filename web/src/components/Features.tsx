@@ -5,22 +5,22 @@ const features = [
   {
     icon: Shield,
     title: "100% Local Processing",
-    description: "Your prompts never leave your machine. Complete privacy guaranteed with Ollama.",
+    description: "Your voice and text never leave your machine. Complete privacy with local models.",
   },
   {
     icon: Keyboard,
     title: "Universal Hotkey",
-    description: "Activate Promptlo from any application with a customizable keyboard shortcut.",
+    description: "Activate LocalWhisper from any application with a customizable keyboard shortcut.",
   },
   {
     icon: Globe,
     title: "Works Everywhere",
-    description: "Compatible with any text field in any application on your system.",
+    description: "Compatible with any text field in any application on your macOS system.",
   },
   {
     icon: Cpu,
-    title: "Powered by Ollama",
-    description: "Leverage state-of-the-art local language models for optimal results.",
+    title: "Dual Engine Support",
+    description: "Switch between Whisper.cpp and Qwen3-ASR for the best performance and accuracy.",
   },
 ];
 
@@ -32,7 +32,7 @@ const Features = () => {
       <div className="container mx-auto relative z-10">
         <div className="text-center mb-16 animate-fade-in">
           <h2 className="text-4xl md:text-5xl font-bold mb-4">
-            Why Promptlo?
+            Why LocalWhisper?
           </h2>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
             The perfect balance of power, privacy, and convenience
