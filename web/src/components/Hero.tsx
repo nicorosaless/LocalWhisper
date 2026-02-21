@@ -2,9 +2,12 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { X, Download } from "lucide-react";
 
-const Hero = () => {
-  const [showModal, setShowModal] = useState(false);
+interface HeroProps {
+  showModal: boolean;
+  setShowModal: (show: boolean) => void;
+}
 
+const Hero = ({ showModal, setShowModal }: HeroProps) => {
   return (
     <>
       <section className="min-h-screen flex items-center justify-center px-6">
@@ -72,14 +75,20 @@ const Hero = () => {
             <div className="mb-8 text-center">
               <h2 className="text-3xl font-light tracking-tight mb-2">Install Local Whisper</h2>
               <div className="flex justify-center mt-4">
-                <a
-                  href="/LocalWhisper.dmg"
-                  download="LocalWhisper.dmg"
-                  className="flex items-center justify-center gap-3 bg-[#8B5CF6] text-white hover:bg-[#7C3AED] font-medium py-3 px-8 rounded-full text-lg transition-all shadow-lg hover:shadow-[#8B5CF6]/25"
+                <Button
+                  className="flex items-center justify-center gap-3 bg-[#8B5CF6] text-white hover:bg-[#7C3AED] font-medium py-3 px-8 h-auto rounded-full text-lg transition-all shadow-lg hover:shadow-[#8B5CF6]/25"
+                  onClick={() => {
+                    const link = document.createElement('a');
+                    link.href = '/LocalWhisper.dmg';
+                    link.download = 'LocalWhisper.dmg';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                  }}
                 >
                   <Download size={20} />
                   Download for Mac
-                </a>
+                </Button>
               </div>
             </div>
 

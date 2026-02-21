@@ -1,7 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { Download } from "lucide-react";
 
-const CTA = () => {
+interface CTAProps {
+  setShowModal: (show: boolean) => void;
+}
+
+const CTA = ({ setShowModal }: CTAProps) => {
   return (
     <section className="py-24 px-4 relative overflow-hidden">
       <div className="absolute inset-0 bg-gradient-primary opacity-10" />
@@ -19,6 +23,7 @@ const CTA = () => {
           <Button 
             size="lg"
             className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-10 py-7 text-lg rounded-xl shadow-lg hover:shadow-primary/50 transition-all"
+            onClick={() => setShowModal(true)}
           >
             <Download className="mr-2 w-5 h-5" />
             Download LocalWhisper
