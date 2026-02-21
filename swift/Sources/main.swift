@@ -2,7 +2,6 @@ import Cocoa
 import Carbon.HIToolbox
 import AVFoundation
 import SwiftUI
-import ServiceManagement
 
 
 func getPerformanceCoreCount() -> Int {
@@ -328,14 +327,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appSetupComplete = true
         
-        // Clean up any legacy LaunchAgent plist from old versions
-        let label = "com.nicorosaless.LocalWhisper"
-        let launchAgentURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
-        if FileManager.default.fileExists(atPath: launchAgentURL.path) {
-            try? FileManager.default.removeItem(at: launchAgentURL)
-            logDebug("🧹 Removed legacy LaunchAgent plist on startup")
-        }
+        // Sync LaunchAgent plist state with the stored config on startup.
+        // This ensures the plist is created/removed if the user moved the app
+        // or if the plist is missing despite the toggle being on.
+        updateLaunchAtLogin()
         isAppStarted = true
         
         // Ensure model path is absolute
@@ -1248,33 +1243,58 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Launch at Login
     
     func updateLaunchAtLogin() {
-        // Use SMAppService (macOS 13+) — the proper system Login Items mechanism.
-        // Unlike writing a LaunchAgent plist to ~/Library/LaunchAgents, SMAppService
-        // does NOT trigger the macOS "Background Activity" notification.
-        if config.launchAtLogin {
-            do {
-                try SMAppService.mainApp.register()
-                logDebug("✅ Login item registered via SMAppService")
-            } catch {
-                logDebug("❌ Failed to register login item: \(error)")
-            }
-        } else {
-            do {
-                try SMAppService.mainApp.unregister()
-                logDebug("✅ Login item unregistered via SMAppService")
-            } catch {
-                logDebug("❌ Failed to unregister login item: \(error)")
-            }
-        }
-        
-        // Clean up any legacy LaunchAgent plist we may have written before
+        // SMAppService.mainApp requires a real Team ID (Apple Developer certificate).
+        // Since this app is ad-hoc signed, we use a LaunchAgent plist instead.
+        // Using RunAtLoad=true WITHOUT KeepAlive means macOS launches the app once
+        // at login and never monitors/restarts it — no "Background Activity" notification.
         let label = "com.nicorosaless.LocalWhisper"
         let launchAgentDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents")
         let plistURL = launchAgentDir.appendingPathComponent("\(label).plist")
-        if FileManager.default.fileExists(atPath: plistURL.path) {
-            try? FileManager.default.removeItem(at: plistURL)
-            logDebug("🧹 Removed legacy LaunchAgent plist")
+
+        if config.launchAtLogin {
+            // Determine the app path: prefer /Applications, fall back to bundle path
+            let appPath: String
+            let applicationsPath = "/Applications/LocalWhisper.app/Contents/MacOS/LocalWhisper"
+            if FileManager.default.fileExists(atPath: applicationsPath) {
+                appPath = applicationsPath
+            } else {
+                appPath = Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0]
+            }
+
+            let plistContent = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>\(label)</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>\(appPath)</string>
+                </array>
+                <key>RunAtLoad</key>
+                <true/>
+            </dict>
+            </plist>
+            """
+
+            do {
+                try FileManager.default.createDirectory(at: launchAgentDir, withIntermediateDirectories: true)
+                try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+                logDebug("✅ LaunchAgent plist written: \(plistURL.path)")
+            } catch {
+                logDebug("❌ Failed to write LaunchAgent plist: \(error)")
+            }
+        } else {
+            if FileManager.default.fileExists(atPath: plistURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: plistURL)
+                    logDebug("✅ LaunchAgent plist removed")
+                } catch {
+                    logDebug("❌ Failed to remove LaunchAgent plist: \(error)")
+                }
+            }
         }
     }
     
