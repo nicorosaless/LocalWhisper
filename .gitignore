@@ -57,6 +57,7 @@ web/public/LocalWhisper.dmg
 # Distribution files (generated, not tracked)
 *.dmg
 *.zip
+swift/cli-build/
 
 # Exception: Allow DMG in web/public for distribution
 !web/public/*.dmg

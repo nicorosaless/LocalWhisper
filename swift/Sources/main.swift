@@ -807,6 +807,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func startRecording() {
         guard !isRecording else { return }
         
+        // Close context menu if open
+        floatingIndicator.closeContextMenu()
+        
         // Use tracked application for focus restoration
         logDebug("📍 StartRecording usage Target App: \(lastActiveApplication?.localizedName ?? "none")")
         

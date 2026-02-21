@@ -974,3 +974,545 @@ class SettingsWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 }
+
+// MARK: - Context Menu Popover View
+struct ContextMenuView: View {
+    var config: AppConfig
+    var availableMicrophones: [(name: String, id: String)]
+    
+    var onSelectLanguage: (String) -> Void
+    var onSelectEngine: (EngineType) -> Void
+    var onSelectMode: (HotkeyMode) -> Void
+    var onSelectMicrophone: (String) -> Void
+    var onOpenSettings: () -> Void
+    var onQuit: () -> Void
+    
+    @State private var expandedSection: String? = nil
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("LocalWhisper")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(red: 0.08, green: 0.08, blue: 0.08))
+            
+            Divider()
+                .background(Color.white.opacity(0.1))
+            
+            // Menu Items
+            VStack(spacing: 0) {
+                // Language
+                ContextMenuRow(
+                    icon: "globe",
+                    title: "Language",
+                    value: Language.all.first(where: { $0.id == config.language })?.name ?? "Auto",
+                    isExpanded: expandedSection == "language",
+                    onTap: { toggleSection("language") }
+                ) {
+                    let rowHeight: CGFloat = 32
+                    let contentHeight = CGFloat(Language.all.count) * rowHeight
+                    let maxListHeight: CGFloat = 200
+                    let listHeight = min(contentHeight, maxListHeight)
+                    
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Language.all) { lang in
+                                Button(action: {
+                                    onSelectLanguage(lang.id)
+                                    expandedSection = nil
+                                }) {
+                                    HStack {
+                                        Text(lang.name)
+                                            .font(.system(size: 13))
+                                            .foregroundColor(config.language == lang.id ? .white : .white.opacity(0.7))
+                                        Spacer()
+                                        if config.language == lang.id {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .foregroundColor(.white)
+                                        }
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(config.language == lang.id ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(height: listHeight)
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.06, green: 0.06, blue: 0.06))
+                }
+                
+                Divider()
+                    .background(Color.white.opacity(0.08))
+                
+                // Engine
+                ContextMenuRow(
+                    icon: "cpu",
+                    title: "Engine",
+                    value: config.engineType.displayName,
+                    isExpanded: expandedSection == "engine",
+                    onTap: { toggleSection("engine") }
+                ) {
+                    VStack(spacing: 0) {
+                        ForEach(EngineType.allCases, id: \.self) { engine in
+                            Button(action: {
+                                onSelectEngine(engine)
+                                expandedSection = nil
+                            }) {
+                                HStack {
+                                    Text(engine.displayName)
+                                        .font(.system(size: 13))
+                                        .foregroundColor(config.engineType == engine ? .white : .white.opacity(0.7))
+                                    Spacer()
+                                    if config.engineType == engine {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(config.engineType == engine ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.06, green: 0.06, blue: 0.06))
+                }
+                
+                Divider()
+                    .background(Color.white.opacity(0.08))
+                
+                // Mode
+                ContextMenuRow(
+                    icon: "gearshape",
+                    title: "Mode",
+                    value: config.hotkeyMode.displayName,
+                    isExpanded: expandedSection == "mode",
+                    onTap: { toggleSection("mode") }
+                ) {
+                    VStack(spacing: 0) {
+                        ForEach(HotkeyMode.allCases, id: \.self) { mode in
+                            Button(action: {
+                                onSelectMode(mode)
+                                expandedSection = nil
+                            }) {
+                                HStack {
+                                    Text(mode.displayName)
+                                        .font(.system(size: 13))
+                                        .foregroundColor(config.hotkeyMode == mode ? .white : .white.opacity(0.7))
+                                    Spacer()
+                                    if config.hotkeyMode == mode {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(config.hotkeyMode == mode ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.06, green: 0.06, blue: 0.06))
+                }
+                
+                Divider()
+                    .background(Color.white.opacity(0.08))
+                
+                // Microphone
+                ContextMenuRow(
+                    icon: "mic",
+                    title: "Microphone",
+                    value: config.microphoneId == nil ? "Default" : (availableMicrophones.first(where: { $0.id == config.microphoneId })?.name ?? "Default"),
+                    isExpanded: expandedSection == "microphone",
+                    onTap: { toggleSection("microphone") }
+                ) {
+                    VStack(spacing: 0) {
+                        Button(action: {
+                            onSelectMicrophone("default")
+                            expandedSection = nil
+                        }) {
+                            HStack {
+                                Text("Default")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(config.microphoneId == nil || config.microphoneId == "default" ? .white : .white.opacity(0.7))
+                                Spacer()
+                                if config.microphoneId == nil || config.microphoneId == "default" {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(config.microphoneId == nil || config.microphoneId == "default" ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                        }
+                        .buttonStyle(.plain)
+                        
+                        ForEach(availableMicrophones, id: \.id) { mic in
+                            Button(action: {
+                                onSelectMicrophone(mic.id)
+                                expandedSection = nil
+                            }) {
+                                HStack {
+                                    Text(mic.name)
+                                        .font(.system(size: 13))
+                                        .foregroundColor(config.microphoneId == mic.id ? .white : .white.opacity(0.7))
+                                    Spacer()
+                                    if config.microphoneId == mic.id {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(config.microphoneId == mic.id ? Color(red: 0.2, green: 0.4, blue: 0.9).opacity(0.3) : Color.clear)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.06, green: 0.06, blue: 0.06))
+                }
+                
+                Divider()
+                    .background(Color.white.opacity(0.08))
+                
+                // Hotkey (non-expandable, opens settings)
+                Button(action: onOpenSettings) {
+                    HStack {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
+                            .frame(width: 20)
+                        Text("Hotkey: \(config.hotkey.displayString)")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.8))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+            }
+            
+            Divider()
+                .background(Color.white.opacity(0.1))
+            
+            // Footer actions
+            VStack(spacing: 0) {
+                Button(action: onOpenSettings) {
+                    HStack {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
+                            .frame(width: 20)
+                        Text("Settings...")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.8))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                
+                Divider()
+                    .background(Color.white.opacity(0.08))
+                
+                Button(action: onQuit) {
+                    HStack {
+                        Image(systemName: "power")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
+                            .frame(width: 20)
+                        Text("Quit")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.8))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Color(red: 0.05, green: 0.05, blue: 0.05))
+            
+            Divider()
+                .background(Color.white.opacity(0.1))
+            
+            // Tip
+            HStack {
+                Image(systemName: "lightbulb")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                Text("Click the pill to record")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color(red: 0.03, green: 0.03, blue: 0.03))
+        }
+        .frame(width: 260)
+        .background(Color(red: 0.03, green: 0.03, blue: 0.03))
+    }
+    
+    private func toggleSection(_ section: String) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            if expandedSection == section {
+                expandedSection = nil
+            } else {
+                expandedSection = section
+            }
+        }
+    }
+}
+
+// MARK: - Context Menu Row
+struct ContextMenuRow<Content: View>: View {
+    let icon: String
+    let title: String
+    let value: String
+    let isExpanded: Bool
+    let onTap: () -> Void
+    @ViewBuilder let content: () -> Content
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: onTap) {
+                HStack {
+                    Image(systemName: icon)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 20)
+                    Text(title)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
+                    Text(value)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.5))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.3))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            
+            if isExpanded {
+                content()
+            }
+        }
+    }
+}
+
+// MARK: - Context Menu Popover Controller
+class ContextMenuPopoverController: NSObject {
+    private var popover: NSWindow?
+    private var config: AppConfig = .defaultConfig
+    private var availableMicrophones: [(name: String, id: String)] = []
+    private var hostingController: NSHostingController<ContextMenuView>?
+    private var sizeObserver: NSKeyValueObservation?
+    
+    var onSelectLanguage: ((String) -> Void)?
+    var onSelectEngine: ((EngineType) -> Void)?
+    var onSelectMode: ((HotkeyMode) -> Void)?
+    var onSelectMicrophone: ((String) -> Void)?
+    var onOpenSettings: (() -> Void)?
+    var onQuit: (() -> Void)?
+    var onClose: (() -> Void)?
+    
+    func refreshConfig(_ newConfig: AppConfig) {
+        self.config = newConfig
+        guard let hostingController = hostingController else { return }
+        
+        let newMenuView = ContextMenuView(
+            config: newConfig,
+            availableMicrophones: availableMicrophones,
+            onSelectLanguage: { [weak self] (langId: String) in
+                self?.onSelectLanguage?(langId)
+                self?.refreshConfig(self?.config ?? newConfig)
+            },
+            onSelectEngine: { [weak self] (engine: EngineType) in
+                self?.onSelectEngine?(engine)
+                self?.refreshConfig(self?.config ?? newConfig)
+            },
+            onSelectMode: { [weak self] (mode: HotkeyMode) in
+                self?.onSelectMode?(mode)
+                self?.refreshConfig(self?.config ?? newConfig)
+            },
+            onSelectMicrophone: { [weak self] (micId: String) in
+                self?.onSelectMicrophone?(micId)
+                self?.refreshConfig(self?.config ?? newConfig)
+            },
+            onOpenSettings: { [weak self] in
+                self?.onOpenSettings?()
+                self?.close()
+            },
+            onQuit: { [weak self] in
+                self?.onQuit?()
+                self?.close()
+            }
+        )
+        
+        hostingController.rootView = newMenuView
+        
+        // Resize the panel to fit the new content
+        resizePanelToFit()
+    }
+    
+    private func resizePanelToFit() {
+        guard let panel = popover, let hc = hostingController else { return }
+        
+        let fittingSize = hc.view.fittingSize
+        let panelWidth: CGFloat = 260
+        let newHeight = max(200, fittingSize.height)
+        
+        // Clamp to screen bounds - leave some margin
+        let screen = panel.screen ?? NSScreen.main
+        let maxHeight = (screen?.visibleFrame.height ?? 800) - 40
+        let clampedHeight = min(newHeight, maxHeight)
+        
+        // Panel grows upward from the pill anchor point
+        let newOriginY = pillAnchorY
+        let oldFrame = panel.frame
+        
+        panel.setFrame(NSRect(x: oldFrame.origin.x, y: newOriginY, width: panelWidth, height: clampedHeight), display: true, animate: false)
+    }
+    
+    func show(
+        relativeTo rect: NSRect,
+        of view: NSView,
+        config: AppConfig,
+        microphones: [(name: String, id: String)]
+    ) {
+        self.config = config
+        self.availableMicrophones = microphones
+        
+        close()
+        
+        let menuView = ContextMenuView(
+            config: config,
+            availableMicrophones: microphones,
+            onSelectLanguage: { [weak self] (langId: String) in
+                self?.onSelectLanguage?(langId)
+                self?.refreshConfig(self?.config ?? config)
+            },
+            onSelectEngine: { [weak self] (engine: EngineType) in
+                self?.onSelectEngine?(engine)
+                self?.refreshConfig(self?.config ?? config)
+            },
+            onSelectMode: { [weak self] (mode: HotkeyMode) in
+                self?.onSelectMode?(mode)
+                self?.refreshConfig(self?.config ?? config)
+            },
+            onSelectMicrophone: { [weak self] (micId: String) in
+                self?.onSelectMicrophone?(micId)
+                self?.refreshConfig(self?.config ?? config)
+            },
+            onOpenSettings: { [weak self] in
+                self?.onOpenSettings?()
+                self?.close()
+            },
+            onQuit: { [weak self] in
+                self?.onQuit?()
+                self?.close()
+            }
+        )
+        
+        let hc = NSHostingController(rootView: menuView)
+        self.hostingController = hc
+        
+        // Let SwiftUI compute the ideal size
+        let fittingSize = hc.view.fittingSize
+        let panelWidth: CGFloat = 260
+        let panelHeight = max(200, fittingSize.height)
+        hc.view.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+        
+        // Create a panel that floats above everything
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .modalPanel
+        panel.hasShadow = true
+        panel.contentViewController = hostingController
+        
+        // Position above the pill
+        if let window = view.window {
+            let pillFrame = view.convert(rect, to: nil)
+            let screenFrame = window.convertToScreen(pillFrame)
+            
+            let panelX = screenFrame.midX - 130 // Center horizontally
+            let panelY = screenFrame.maxY + 8 // Above the pill with 8px gap
+            self.pillAnchorY = panelY // Remember anchor for resizing
+            
+            panel.setFrameOrigin(NSPoint(x: panelX, y: panelY))
+        }
+        
+        // Observe intrinsicContentSize changes to resize panel when sections expand/collapse
+        sizeObserver = hc.view.observe(\.intrinsicContentSize, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.resizePanelToFit()
+            }
+        }
+        
+        // Add click-outside monitor
+        let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self = self, let panel = self.popover else { return }
+            
+            let mouseLocation = event.locationInWindow
+            let panelFrame = panel.frame
+            
+            // Check if click is outside panel
+            if !panelFrame.contains(mouseLocation) {
+                self.close()
+            }
+        }
+        
+        panel.makeKeyAndOrderFront(nil)
+        
+        self.popover = panel
+        self.clickMonitor = monitor
+    }
+    
+    private var clickMonitor: Any?
+    private var pillAnchorY: CGFloat = 0 // Bottom of the panel (top of pill + gap)
+    
+    func close() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+        sizeObserver?.invalidate()
+        sizeObserver = nil
+        popover?.close()
+        popover = nil
+        hostingController = nil
+        onClose?()
+    }
+}
