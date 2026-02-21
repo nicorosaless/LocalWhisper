@@ -327,9 +327,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appSetupComplete = true
         
-        // Sync LaunchAgent plist state with the stored config on startup.
-        // This ensures the plist is created/removed if the user moved the app
-        // or if the plist is missing despite the toggle being on.
+        // Sync login item state on startup: removes any legacy LaunchAgent plist
+        // and re-registers the Login Item via System Events if the toggle is on.
         updateLaunchAtLogin()
         isAppStarted = true
         
@@ -1243,56 +1242,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Launch at Login
     
     func updateLaunchAtLogin() {
-        // SMAppService.mainApp requires a real Team ID (Apple Developer certificate).
-        // Since this app is ad-hoc signed, we use a LaunchAgent plist instead.
-        // Using RunAtLoad=true WITHOUT KeepAlive means macOS launches the app once
-        // at login and never monitors/restarts it — no "Background Activity" notification.
+        // Use System Events Login Items via osascript — this adds/removes the app from
+        // System Settings → General → Login Items. This is the ONLY method that works
+        // for ad-hoc signed apps (no Team ID) without triggering the macOS
+        // "running in the background" notification. LaunchAgent plists always show
+        // that notification regardless of KeepAlive setting.
+        //
+        // Also clean up any LaunchAgent plist we may have written in previous versions.
         let label = "com.nicorosaless.LocalWhisper"
-        let launchAgentDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents")
-        let plistURL = launchAgentDir.appendingPathComponent("\(label).plist")
+        let plistURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        if FileManager.default.fileExists(atPath: plistURL.path) {
+            try? FileManager.default.removeItem(at: plistURL)
+            logDebug("🧹 Removed legacy LaunchAgent plist")
+        }
 
-        if config.launchAtLogin {
-            // Determine the app path: prefer /Applications, fall back to bundle path
-            let appPath: String
-            let applicationsPath = "/Applications/LocalWhisper.app/Contents/MacOS/LocalWhisper"
-            if FileManager.default.fileExists(atPath: applicationsPath) {
-                appPath = applicationsPath
-            } else {
-                appPath = Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0]
-            }
-
-            let plistContent = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>Label</key>
-                <string>\(label)</string>
-                <key>ProgramArguments</key>
-                <array>
-                    <string>\(appPath)</string>
-                </array>
-                <key>RunAtLoad</key>
-                <true/>
-            </dict>
-            </plist>
-            """
-
-            do {
-                try FileManager.default.createDirectory(at: launchAgentDir, withIntermediateDirectories: true)
-                try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
-                logDebug("✅ LaunchAgent plist written: \(plistURL.path)")
-            } catch {
-                logDebug("❌ Failed to write LaunchAgent plist: \(error)")
-            }
+        // Determine the .app bundle path
+        let appBundlePath: String
+        if FileManager.default.fileExists(atPath: "/Applications/LocalWhisper.app") {
+            appBundlePath = "/Applications/LocalWhisper.app"
         } else {
-            if FileManager.default.fileExists(atPath: plistURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: plistURL)
-                    logDebug("✅ LaunchAgent plist removed")
-                } catch {
-                    logDebug("❌ Failed to remove LaunchAgent plist: \(error)")
+            appBundlePath = Bundle.main.bundlePath
+        }
+
+        let script: String
+        if config.launchAtLogin {
+            script = """
+            tell application "System Events"
+                if not (exists login item "LocalWhisper") then
+                    make login item at end with properties {path:"\(appBundlePath)", hidden:false}
+                end if
+            end tell
+            """
+        } else {
+            script = """
+            tell application "System Events"
+                if exists login item "LocalWhisper" then
+                    delete login item "LocalWhisper"
+                end if
+            end tell
+            """
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            var error: NSDictionary?
+            if let scriptObj = NSAppleScript(source: script) {
+                scriptObj.executeAndReturnError(&error)
+                if let err = error {
+                    logDebug("❌ Login item script error: \(err)")
+                } else {
+                    logDebug("✅ Login item \(self.config.launchAtLogin ? "added" : "removed") via System Events")
                 }
             }
         }

@@ -363,12 +363,6 @@ class Qwen3ASREngine: TranscriptionEngine {
             }
         }
         
-        // 5. Hardcoded fallback for development
-        let fallback = "/Users/testnico/Documents/GitHub/whipermac/scripts/transcribe.py"
-        if FileManager.default.fileExists(atPath: fallback) {
-            return fallback
-        }
-        
         return nil
     }
     
