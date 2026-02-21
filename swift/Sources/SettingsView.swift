@@ -95,6 +95,7 @@ struct AppConfig: Codable {
     var preferredPasteMethod: PasteMethod
     var launchAtLogin: Bool
     var engineType: EngineType
+    var microphoneId: String?
     
     enum CodingKeys: String, CodingKey {
         case language
@@ -106,6 +107,7 @@ struct AppConfig: Codable {
         case preferredPasteMethod = "preferred_paste_method"
         case launchAtLogin = "launch_at_login"
         case engineType = "engine_type"
+        case microphoneId = "microphone_id"
     }
     
     init(
@@ -117,7 +119,8 @@ struct AppConfig: Codable {
         pasteDelay: Int = 80,
         preferredPasteMethod: PasteMethod = .auto,
         launchAtLogin: Bool = false,
-        engineType: EngineType = .whisperCpp
+        engineType: EngineType = .whisperCpp,
+        microphoneId: String? = nil
     ) {
         self.language = language
         self.hotkey = hotkey
@@ -128,6 +131,7 @@ struct AppConfig: Codable {
         self.preferredPasteMethod = preferredPasteMethod
         self.launchAtLogin = launchAtLogin
         self.engineType = engineType
+        self.microphoneId = microphoneId
     }
     
     static let defaultConfig = AppConfig()
@@ -143,6 +147,7 @@ struct AppConfig: Codable {
         preferredPasteMethod = try container.decode(PasteMethod.self, forKey: .preferredPasteMethod)
         launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
         engineType = try container.decodeIfPresent(EngineType.self, forKey: .engineType) ?? .whisperCpp
+        microphoneId = try container.decodeIfPresent(String.self, forKey: .microphoneId)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -156,6 +161,7 @@ struct AppConfig: Codable {
         try container.encode(preferredPasteMethod, forKey: .preferredPasteMethod)
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(engineType, forKey: .engineType)
+        try container.encodeIfPresent(microphoneId, forKey: .microphoneId)
     }
 }
 
@@ -717,7 +723,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var downloadToast: some View {
         let activeDownload: (engine: EngineType, progress: Double)? = {
-            for engine in [EngineType.qwenSmall, .qwenLarge] {
+            for engine in [EngineType.qwenSmall] {
                 if case .downloading(let p) = downloadManager.states[engine] {
                     return (engine, p)
                 }

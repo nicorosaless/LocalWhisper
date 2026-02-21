@@ -51,6 +51,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Store last active application
     var lastActiveApplication: NSRunningApplication?
     
+    // Latency tracking
+    var transcriptionStartTime: CFAbsoluteTime?
+    
     // Transcription Engine
     var activeEngine: TranscriptionEngine?
     
@@ -101,6 +104,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         loadConfig()
     }
     
+    func getAvailableMicrophones() -> [(name: String, id: String)] {
+        var microphones: [(name: String, id: String)] = []
+        
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        
+        for device in discoverySession.devices {
+            microphones.append((name: device.localizedName, id: device.uniqueID))
+        }
+        
+        return microphones
+    }
+    
     func loadConfig() {
         let configPath = "\(appDir)/config.json"
         
@@ -122,9 +141,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Migrate old default paste delay (200ms) to new optimized value (80ms)
-        if config.pasteDelay >= 200 {
-            config.pasteDelay = 80
+        // Migrate old default paste delay to new optimized value (30ms)
+        // Pre-activation during transcription means we need less delay here
+        if config.pasteDelay >= 80 {
+            config.pasteDelay = 30
         }
         
         logDebug("Config loaded: language=\(config.language), mode=\(config.hotkeyMode), pasteDelay=\(config.pasteDelay)ms")
@@ -331,6 +351,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logDebug("🚀 Creating FloatingIndicatorWindow...")
         floatingIndicator = FloatingIndicatorWindow()
         floatingIndicator.hotkeyDisplayString = config.hotkey.displayString
+        floatingIndicator.currentConfig = config
+        floatingIndicator.availableMicrophones = getAvailableMicrophones()
+        
         floatingIndicator.onOpenSettings = { [weak self] in
             self?.openSettings()
         }
@@ -353,6 +376,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         floatingIndicator.onCancelRecording = { [weak self] in
             self?.cancelRecording()
         }
+        
+        // Context Menu Callbacks
+        floatingIndicator.onSelectLanguage = { [weak self] langId in
+            guard let self = self else { return }
+            self.config.language = langId
+            self.saveConfig()
+            self.floatingIndicator.currentConfig = self.config
+            logDebug("🌐 Language changed to: \(langId)")
+        }
+        
+        floatingIndicator.onSelectEngine = { [weak self] engine in
+            guard let self = self else { return }
+            self.config.engineType = engine
+            self.saveConfig()
+            self.floatingIndicator.currentConfig = self.config
+            logDebug("🧠 Engine changed to: \(engine.displayName)")
+            Task {
+                await self.loadEngine()
+            }
+        }
+        
+        floatingIndicator.onSelectMode = { [weak self] mode in
+            guard let self = self else { return }
+            self.config.hotkeyMode = mode
+            self.saveConfig()
+            self.floatingIndicator.currentConfig = self.config
+            logDebug("⚙️ Mode changed to: \(mode.displayName)")
+        }
+        
+        floatingIndicator.onSelectMicrophone = { [weak self] micId in
+            guard let self = self else { return }
+            self.config.microphoneId = micId
+            self.saveConfig()
+            self.floatingIndicator.currentConfig = self.config
+            logDebug("🎤 Microphone changed to: \(micId)")
+        }
+        
         floatingIndicator.orderFrontRegardless()
         logDebug("🚀 FloatingIndicatorWindow created and shown")
         
@@ -819,6 +879,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard isRecording else { return }
         isRecording = false
         
+        let recordingStopTime = CFAbsoluteTimeGetCurrent()
+        
         stopAudioLevelMonitoring()
         audioRecorder?.stop()
         audioRecorder = nil
@@ -833,6 +895,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         logDebug("Recording finished.")
+        
+        // Pre-activate the target app NOW so it's focused by the time transcription finishes.
+        // This overlaps the focus-wait with the transcription time (~300-2000ms), saving ~70-130ms.
+        if config.autoPaste, let app = lastActiveApplication,
+           app.bundleIdentifier != Bundle.main.bundleIdentifier {
+            logDebug("🚀 Pre-activating target app: \(app.localizedName ?? "Unknown") during transcription")
+            app.activate(options: [.activateAllWindows])
+        }
+        
+        // Store timing for latency tracking
+        transcriptionStartTime = recordingStopTime
         
         // Transcribe
         transcribe()
@@ -896,7 +969,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch config.engineType {
         case .whisperCpp:
             activeEngine = WhisperCppEngine(appDir: appDir)
-        case .qwenSmall, .qwenLarge:
+        case .qwenSmall:
             if #available(macOS 14.0, *) {
                 activeEngine = Qwen3ASREngine(type: config.engineType)
             } else {
@@ -1084,12 +1157,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func handleTranscriptionResult(_ text: String) async {
         if !text.isEmpty {
-            logDebug("✅ Transcription successful: \(text)")
+            let transcriptionDoneTime = CFAbsoluteTimeGetCurrent()
+            let latency = transcriptionStartTime != nil ? (transcriptionDoneTime - transcriptionStartTime!) : 0
+            logDebug("✅ Transcription successful (\(String(format: "%.3f", latency))s): \(text)")
             
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             
-            usleep(10000)
+            usleep(3000) // 3ms clipboard settle (was 10ms)
             
             if config.autoPaste {
                 if let app = lastActiveApplication {
@@ -1206,7 +1281,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Wait for focus
             var attempts = 0
             while NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier && attempts < 10 {
-                usleep(20000)
+                usleep(10000) // 10ms poll (was 20ms — app is pre-activated during transcription)
                 attempts += 1
             }
             
@@ -1235,7 +1310,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 event.post(tap: .cghidEventTap)
             }
-            usleep(8000) // 8ms between key events
+            usleep(4000) // 4ms between key events (was 8ms)
         }
         
         post(cmdDown)
@@ -1421,7 +1496,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         finalTarget?.activate(options: [.activateAllWindows])
         
         // 2. Wait for focus to settle
-        usleep(50000) // 50ms baseline delay
+        usleep(15000) // 15ms baseline delay (was 50ms — target app is pre-activated during transcription)
         
         let strategies: [(String, () -> Bool)]
         
@@ -1451,7 +1526,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for (name, strategy) in strategies {
             logDebug("🔄 Trying strategy: \(name)")
             if strategy() {
-                logDebug("✅ Paste successful with: \(name)")
+                let finalDoneTime = CFAbsoluteTimeGetCurrent()
+                let totalLatency = transcriptionStartTime != nil ? (finalDoneTime - transcriptionStartTime!) : 0
+                logDebug("✅ Paste successful with: \(name). Total E2E latency: \(String(format: "%.3f", totalLatency))s")
                 return
             }
             logDebug("⚠️ Strategy \(name) failed, trying next...")

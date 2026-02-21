@@ -11,13 +11,11 @@ enum QwenDownloadState: Equatable {
 enum EngineType: String, CaseIterable, Codable {
     case whisperCpp = "whisper.cpp"
     case qwenSmall = "qwen-0.6b"
-    case qwenLarge = "qwen-1.7b"
     
     var displayName: String {
         switch self {
         case .whisperCpp: return "Whisper.cpp"
         case .qwenSmall: return "Qwen3 0.6B (Fast)"
-        case .qwenLarge: return "Qwen3 1.7B (Accurate)"
         }
     }
     
@@ -25,7 +23,6 @@ enum EngineType: String, CaseIterable, Codable {
         switch self {
         case .whisperCpp: return nil
         case .qwenSmall: return "mlx-community/Qwen3-ASR-0.6B-4bit"
-        case .qwenLarge: return "mlx-community/Qwen3-ASR-1.7B-8bit"
         }
     }
     
@@ -33,7 +30,6 @@ enum EngineType: String, CaseIterable, Codable {
         switch self {
         case .whisperCpp: return "~466 MB"
         case .qwenSmall: return "~400 MB"
-        case .qwenLarge: return "~2.5 GB"
         }
     }
     
@@ -41,7 +37,6 @@ enum EngineType: String, CaseIterable, Codable {
         switch self {
         case .whisperCpp: return "~0.10"
         case .qwenSmall: return "~0.06"
-        case .qwenLarge: return "~0.11"
         }
     }
 

@@ -1,46 +1,24 @@
 import Foundation
-import MLX
-
-// MARK: - Global MLX error handler
-// MLX evaluates ops on its own background scheduler thread (mlx::core::scheduler::StreamThread).
-// That thread is NOT in any Swift Task context, so @TaskLocal-based withError() handlers
-// never fire there. The default fallback is fatalError() — which causes EXC_BREAKPOINT crashes
-// that are uncatchable. We override that with a global C callback that logs instead of crashing,
-// allowing our Swift shape-guards to detect and handle failures gracefully.
-private let mlxErrorLogBuffer = NSLock()
-private var _lastMLXError: String? = nil
-
-private func installMLXLoggingErrorHandler() {
-    // setErrorHandler is deprecated but is the only way to install a truly global
-    // (non-task-local) handler that fires from MLX's background eval threads.
-    setErrorHandler { message, _ in
-        let msg = message.map { String(cString: $0) } ?? "(unknown MLX error)"
-        logDebug("[MLX ERROR] \(msg)")
-        mlxErrorLogBuffer.withLock { _lastMLXError = msg }
-        // Do NOT call fatalError/abort — let Swift shape-guards handle the fallout.
-    }
-}
-
-func mlxLastError() -> String? {
-    mlxErrorLogBuffer.withLock { _lastMLXError }
-}
-
-func mlxClearError() {
-    mlxErrorLogBuffer.withLock { _lastMLXError = nil }
-}
 
 @available(macOS 14.0, *)
 class Qwen3ASREngine: TranscriptionEngine {
     let type: EngineType
     var status: EngineStatus = EngineStatus()
     
-    private var model: Qwen3ASRModel?
     private let modelId: String
     private let cacheDirectory: URL
-
-    // Whether Metal/GPU is available for MLX (requires bundled metallib).
-    // We try GPU first for speed; fall back to CPU if an MLX error occurs.
-    private let gpuAvailable: Bool
+    
+    // Persistent Python subprocess
+    private var pythonProcess: Process?
+    private var stdinPipe: Pipe?
+    private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
+    private var stdoutBuffer: Data = Data()
+    private let bufferLock = NSLock()
+    private let dataAvailable = DispatchSemaphore(value: 0)
+    
+    // Python interpreter and script paths
+    private let pythonPath = "/opt/homebrew/bin/python3.11"
     
     init(type: EngineType) {
         guard type.modelId != nil else {
@@ -49,80 +27,266 @@ class Qwen3ASREngine: TranscriptionEngine {
         self.type = type
         self.modelId = type.modelId ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
         self.cacheDirectory = Self.getCacheDirectory()
-        self.gpuAvailable = EngineType.hasBundledMLXMetallib
-        logDebug("[Qwen3ASREngine] gpuAvailable=\(EngineType.hasBundledMLXMetallib)")
-        // Install global logging error handler so MLX background-thread errors
-        // are logged instead of calling fatalError/abort.
-        installMLXLoggingErrorHandler()
     }
     
     func load(progress: @escaping (Double) -> Void) async throws {
         status.isLoading = true
         status.errorMessage = nil
         progress(0.0)
-
-        let modelDir = cacheDirectory.appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
         
+        // Verify model weights exist
+        let modelDir = cacheDirectory.appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
+        guard FileManager.default.fileExists(atPath: modelDir.path) else {
+            status.isLoading = false
+            throw TranscriptionError.modelLoadFailed("Model weights not found at \(modelDir.path). Please download them in Settings.")
+        }
+        
+        // Verify Python interpreter exists
+        guard FileManager.default.fileExists(atPath: pythonPath) else {
+            status.isLoading = false
+            throw TranscriptionError.modelLoadFailed("Python 3.11 not found at \(pythonPath). Install with: brew install python@3.11")
+        }
+        
+        // Find the transcribe.py script
+        let scriptPath = Self.findTranscribeScript()
+        guard let scriptPath = scriptPath else {
+            status.isLoading = false
+            throw TranscriptionError.modelLoadFailed("transcribe.py not found. Expected in app bundle Resources/scripts/ or project scripts/ directory.")
+        }
+        
+        logDebug("[Qwen3ASREngine] Using Python: \(pythonPath)")
+        logDebug("[Qwen3ASREngine] Using script: \(scriptPath)")
+        logDebug("[Qwen3ASREngine] Using model: \(modelDir.path)")
+        
+        progress(0.1)
+        
+        // Start the persistent Python process
         do {
-            if !FileManager.default.fileExists(atPath: modelDir.path) {
-                throw TranscriptionError.modelLoadFailed("Model weights not found. Please download them in Settings.")
-            }
-            
-            progress(0.9)
-            // Load weights on CPU — weight loading is memory-bound, not compute-bound.
-            // The device choice for forward passes is made per-transcription.
-            model = try Device.withDefaultDevice(.cpu) {
-                try Qwen3ASRModel(directory: modelDir)
-            }
-            progress(1.0)
-            
-            status.isLoaded = true
+            try startPythonProcess(scriptPath: scriptPath, modelDir: modelDir.path)
         } catch {
             status.isLoading = false
             status.errorMessage = error.localizedDescription
-            throw TranscriptionError.modelLoadFailed(error.localizedDescription)
+            throw error
         }
         
+        progress(0.3)
+        
+        // Wait for the "ready" signal from the Python process
+        logDebug("[Qwen3ASREngine] Waiting for Python model to load...")
+        do {
+            let readyResponse = try waitForResponse(timeout: 120) // Model loading can take a while
+            if let statusVal = readyResponse["status"] as? String, statusVal == "ready" {
+                logDebug("[Qwen3ASREngine] Python process ready!")
+            } else if let error = readyResponse["error"] as? String {
+                throw TranscriptionError.modelLoadFailed("Python process error: \(error)")
+            } else {
+                throw TranscriptionError.modelLoadFailed("Unexpected response from Python process: \(readyResponse)")
+            }
+        } catch {
+            stopPythonProcess()
+            status.isLoading = false
+            status.errorMessage = error.localizedDescription
+            throw error
+        }
+        
+        progress(1.0)
+        status.isLoaded = true
         status.isLoading = false
     }
     
     func transcribe(audioURL: URL, language: String) async throws -> String {
-        guard status.isLoaded, let model = model else {
+        guard status.isLoaded, pythonProcess != nil else {
             throw TranscriptionError.modelNotLoaded
         }
         
-        let audioData = try Data(contentsOf: audioURL)
-        logDebug("[Qwen3ASREngine] audioData size=\(audioData.count)")
-        let samples = parseWAVToFloatSamples(audioData)
-        logDebug("[Qwen3ASREngine] samples count=\(samples.count)")
-        
-        guard !samples.isEmpty else {
-            throw TranscriptionError.invalidAudioFile
+        // Verify the process is still running
+        guard let process = pythonProcess, process.isRunning else {
+            status.isLoaded = false
+            throw TranscriptionError.transcriptionFailed("Python process has exited unexpectedly. Please reload the engine.")
         }
         
         let qwenLanguage = mapLanguageToQwen(language)
-
-        // Temporarily: always use CPU to avoid GPU-poisoning-MLX-state issues.
-        // The GPU attention path produces degenerate tensors on this machine (Apple M1 Pro,
-        // macOS 26.x) and attempting GPU can corrupt MLX's scheduler state for subsequent CPU ops.
-        // TODO: re-enable GPU once text decoder attention is fixed for this GPU family.
-        logDebug("[Qwen3ASREngine] Running transcription on CPU")
-        mlxClearError()
-        let result = try Device.withDefaultDevice(.cpu) {
-            try model.transcribe(samples: samples, language: qwenLanguage)
+        
+        // Send transcription request
+        let request: [String: Any] = [
+            "wav": audioURL.path,
+            "language": qwenLanguage
+        ]
+        
+        do {
+            let requestData = try JSONSerialization.data(withJSONObject: request)
+            guard var requestString = String(data: requestData, encoding: .utf8) else {
+                throw TranscriptionError.transcriptionFailed("Failed to encode request as JSON")
+            }
+            requestString += "\n"
+            
+            logDebug("[Qwen3ASREngine] Sending request: \(requestString.trimmingCharacters(in: .newlines))")
+            
+            guard let stdinPipe = stdinPipe else {
+                throw TranscriptionError.transcriptionFailed("stdin pipe not available")
+            }
+            
+            stdinPipe.fileHandleForWriting.write(requestString.data(using: .utf8)!)
+            
+            // Wait for response
+            let response = try waitForResponse(timeout: 60) // Transcription timeout
+            
+            if let text = response["text"] as? String {
+                logDebug("[Qwen3ASREngine] Transcription result: \(text)")
+                return text
+            } else if let error = response["error"] as? String {
+                throw TranscriptionError.transcriptionFailed("Python error: \(error)")
+            } else {
+                throw TranscriptionError.transcriptionFailed("Unexpected response: \(response)")
+            }
+        } catch let error as TranscriptionError {
+            throw error
+        } catch {
+            throw TranscriptionError.transcriptionFailed(error.localizedDescription)
         }
-        if let err = mlxLastError() {
-            logDebug("[Qwen3ASREngine] CPU MLX error: \(err)")
-            throw TranscriptionError.transcriptionFailed("MLX error: \(err)")
-        }
-        logDebug("[Qwen3ASREngine] CPU transcription succeeded")
-        return result
     }
     
     func unload() {
-        model = nil
+        stopPythonProcess()
         status.isLoaded = false
     }
+    
+    // MARK: - Python Process Management
+    
+    private func startPythonProcess(scriptPath: String, modelDir: String) throws {
+        // Stop any existing process
+        stopPythonProcess()
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = [
+            scriptPath,
+            "--model-dir", modelDir,
+            "--warmup"
+        ]
+        
+        // Set up environment
+        var env = ProcessInfo.processInfo.environment
+        // Ensure Python can find its packages
+        env["PYTHONUNBUFFERED"] = "1"
+        process.environment = env
+        
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+        
+        // Read stderr asynchronously for logging
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty, let line = String(data: data, encoding: .utf8) {
+                logDebug("[Python] \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+        }
+        
+        // Read stdout asynchronously into a buffer, signal when data arrives
+        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                self?.bufferLock.lock()
+                self?.stdoutBuffer.append(data)
+                self?.bufferLock.unlock()
+                self?.dataAvailable.signal()
+            }
+        }
+        
+        self.pythonProcess = process
+        self.stdinPipe = stdin
+        self.stdoutPipe = stdout
+        self.stderrPipe = stderr
+        self.stdoutBuffer = Data()
+        
+        do {
+            try process.run()
+            logDebug("[Qwen3ASREngine] Python process started (PID: \(process.processIdentifier))")
+        } catch {
+            self.pythonProcess = nil
+            self.stdinPipe = nil
+            self.stdoutPipe = nil
+            self.stderrPipe = nil
+            throw TranscriptionError.modelLoadFailed("Failed to start Python process: \(error.localizedDescription)")
+        }
+    }
+    
+    private func stopPythonProcess() {
+        if let process = pythonProcess, process.isRunning {
+            // Try graceful quit first
+            let quitRequest = "{\"cmd\":\"quit\"}\n"
+            stdinPipe?.fileHandleForWriting.write(quitRequest.data(using: .utf8)!)
+            
+            // Give it a moment to exit gracefully
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { [weak process] in
+                if let p = process, p.isRunning {
+                    p.terminate()
+                }
+            }
+        }
+        
+        // Clean up handlers to avoid retain cycles
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        
+        pythonProcess = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
+        stdoutBuffer = Data()
+    }
+    
+    /// Wait for a complete JSON line from stdout, with timeout.
+    /// Uses a semaphore to wake immediately when data arrives instead of polling.
+    private func waitForResponse(timeout: TimeInterval) throws -> [String: Any] {
+        let deadline = DispatchTime.now() + timeout
+        
+        while true {
+            // Check if process has died
+            if let process = pythonProcess, !process.isRunning {
+                throw TranscriptionError.transcriptionFailed(
+                    "Python process exited with code \(process.terminationStatus)")
+            }
+            
+            // Try to extract a complete JSON line from the buffer
+            bufferLock.lock()
+            if let newlineRange = stdoutBuffer.range(of: Data("\n".utf8)) {
+                let lineData = stdoutBuffer.subdata(in: stdoutBuffer.startIndex..<newlineRange.lowerBound)
+                stdoutBuffer.removeSubrange(stdoutBuffer.startIndex..<newlineRange.upperBound)
+                bufferLock.unlock()
+                
+                guard let lineString = String(data: lineData, encoding: .utf8) else {
+                    throw TranscriptionError.transcriptionFailed("Failed to decode response as UTF-8")
+                }
+                
+                let trimmed = lineString.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { continue }
+                
+                guard let jsonData = trimmed.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                    logDebug("[Qwen3ASREngine] Non-JSON output from Python: \(trimmed)")
+                    continue
+                }
+                
+                return json
+            } else {
+                bufferLock.unlock()
+            }
+            
+            // Wait for data with timeout — wakes immediately when readabilityHandler signals
+            let result = dataAvailable.wait(timeout: deadline)
+            if result == .timedOut {
+                throw TranscriptionError.transcriptionFailed("Timeout waiting for Python response after \(Int(timeout))s")
+            }
+        }
+    }
+    
+    // MARK: - Helpers
     
     private static func getCacheDirectory() -> URL {
         if let customDir = ProcessInfo.processInfo.environment["QWEN3_CACHE_DIR"] {
@@ -138,58 +302,57 @@ class Qwen3ASREngine: TranscriptionEngine {
         return cacheDir
     }
     
-    // downloadModel removed as it's handled by ModelDownloadService
-    
-    /// Parse a WAV file to float samples, correctly handling variable-length headers.
-    /// AVAudioRecorder on macOS may write LIST/INFO chunks before the data chunk,
-    /// making the PCM data start beyond the standard 44-byte offset.
-    private func parseWAVToFloatSamples(_ data: Data) -> [Float] {
-        // Minimum valid WAV: "RIFF" + 4 + "WAVE" = 12 bytes
-        guard data.count > 44 else { return [] }
-
-        // Find the "data" chunk by scanning the RIFF chunk list.
-        // RIFF layout: [RIFF 4B][fileSize 4B][WAVE 4B] then chunks:
-        //              [chunkId 4B][chunkSize 4B][chunkData ...]
-        var offset = 12  // skip RIFF header
-
-        var dataStart = -1
-        var dataSize  = 0
-
-        while offset + 8 <= data.count {
-            let id = String(bytes: data[offset..<offset+4], encoding: .ascii) ?? ""
-            let chunkSize = Int(data[offset+4]) |
-                            Int(data[offset+5]) << 8 |
-                            Int(data[offset+6]) << 16 |
-                            Int(data[offset+7]) << 24
-            offset += 8
-            if id == "data" {
-                dataStart = offset
-                dataSize  = min(chunkSize, data.count - offset)
-                break
+    /// Find the transcribe.py script in several locations.
+    private static func findTranscribeScript() -> String? {
+        // 1. Check app bundle Resources/scripts/
+        if let bundlePath = Bundle.main.resourcePath {
+            let bundleScript = (bundlePath as NSString).appendingPathComponent("scripts/transcribe.py")
+            if FileManager.default.fileExists(atPath: bundleScript) {
+                return bundleScript
             }
-            // Skip this chunk (pad to even boundary)
-            offset += chunkSize + (chunkSize & 1)
         }
-
-        guard dataStart >= 0, dataSize >= 2 else {
-            logDebug("[Qwen3ASREngine] ❌ No 'data' chunk found in WAV (size \(data.count))")
-            return []
+        
+        // 2. Check next to the executable (in Contents/MacOS/../scripts/)
+        if let execPath = Bundle.main.executablePath {
+            let contentsDir = (execPath as NSString).deletingLastPathComponent  // MacOS/
+            let appContentsDir = (contentsDir as NSString).deletingLastPathComponent  // Contents/
+            let scriptsDir = (appContentsDir as NSString).appendingPathComponent("Resources/scripts/transcribe.py")
+            if FileManager.default.fileExists(atPath: scriptsDir) {
+                return scriptsDir
+            }
         }
-
-        let nSamples = dataSize / 2
-        var samples = [Float]()
-        samples.reserveCapacity(nSamples)
-
-        for i in 0..<nSamples {
-            let byteOffset = dataStart + i * 2
-            let low  = UInt8(data[byteOffset])
-            let high = UInt8(data[byteOffset + 1])
-            let intSample = Int16(bitPattern: UInt16(low) | (UInt16(high) << 8))
-            samples.append(Float(intSample) / 32768.0)
+        
+        // 3. Check relative to the process (for development: project/scripts/)
+        let devPath = (ProcessInfo.processInfo.environment["PROJECT_DIR"] ?? "").isEmpty
+            ? "" : ProcessInfo.processInfo.environment["PROJECT_DIR"]!
+        if !devPath.isEmpty {
+            let devScript = (devPath as NSString).appendingPathComponent("scripts/transcribe.py")
+            if FileManager.default.fileExists(atPath: devScript) {
+                return devScript
+            }
         }
-
-        logDebug("[Qwen3ASREngine] WAV parsed: dataStart=\(dataStart) nSamples=\(nSamples) duration=\(String(format: "%.2f", Double(nSamples)/16000.0))s")
-        return samples
+        
+        // 4. Walk up from executable to find scripts/transcribe.py (development builds)
+        if let execPath = Bundle.main.executablePath {
+            var dir = (execPath as NSString).deletingLastPathComponent
+            for _ in 0..<10 {  // Walk up at most 10 levels
+                let candidate = (dir as NSString).appendingPathComponent("scripts/transcribe.py")
+                if FileManager.default.fileExists(atPath: candidate) {
+                    return candidate
+                }
+                let parent = (dir as NSString).deletingLastPathComponent
+                if parent == dir { break }
+                dir = parent
+            }
+        }
+        
+        // 5. Hardcoded fallback for development
+        let fallback = "/Users/testnico/Documents/GitHub/whipermac/scripts/transcribe.py"
+        if FileManager.default.fileExists(atPath: fallback) {
+            return fallback
+        }
+        
+        return nil
     }
     
     private func mapLanguageToQwen(_ lang: String) -> String {

@@ -41,6 +41,11 @@ if [ -d "${PROJECT_DIR}/models" ]; then
     cp -r "${PROJECT_DIR}/models" "${RESOURCES_DIR}/"
 fi
 
+# Copy Python transcription script
+echo "📦 Copying transcribe.py..."
+mkdir -p "${RESOURCES_DIR}/scripts"
+cp "${PROJECT_DIR}/scripts/transcribe.py" "${RESOURCES_DIR}/scripts/"
+
 # Create Info.plist
 cat > "${CONTENTS_DIR}/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

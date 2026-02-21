@@ -1,5 +1,6 @@
 import Cocoa
 import AVFoundation
+import SwiftUI
 
 // MARK: - State
 enum IndicatorState {
@@ -26,6 +27,16 @@ class FloatingIndicatorWindow: NSPanel {
     var onStartRecording: (() -> Void)?
     var onStopRecording: (() -> Void)?
     var onCancelRecording: (() -> Void)?
+    
+    // Callbacks for Context Menu actions
+    var onSelectLanguage: ((String) -> Void)?
+    var onSelectEngine: ((EngineType) -> Void)?
+    var onSelectMode: ((HotkeyMode) -> Void)?
+    var onSelectMicrophone: ((String) -> Void)?
+    
+    // Data for menu (provided by main.swift)
+    var availableMicrophones: [(name: String, id: String)] = []
+    var currentConfig: AppConfig?
     
     // The app we are currently 'locked' to for pasting
     var lockedTargetAppName: String? {
@@ -192,14 +203,150 @@ class FloatingIndicatorWindow: NSPanel {
     }
     
     override func rightMouseDown(with event: NSEvent) {
+        showContextMenu(with: event)
+    }
+
+    // MARK: - Context Menu
+    func showContextMenu(with event: NSEvent) {
+        let menu = NSMenu(title: "LocalWhisper")
+        
+        // --- Language Submenu ---
+        let languageItem = NSMenuItem(title: "🌐 Language", action: nil, keyEquivalent: "")
+        let languageMenu = NSMenu()
+        for lang in Language.all {
+            let item = NSMenuItem(title: lang.name, action: #selector(selectLanguageAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = lang.id
+            if currentConfig?.language == lang.id {
+                item.state = .on
+            }
+            languageMenu.addItem(item)
+        }
+        languageItem.submenu = languageMenu
+        menu.addItem(languageItem)
+        
+        // --- Engine Submenu ---
+        let engineItem = NSMenuItem(title: "🧠 Engine", action: nil, keyEquivalent: "")
+        let engineMenu = NSMenu()
+        for engine in EngineType.allCases {
+            let item = NSMenuItem(title: engine.displayName, action: #selector(selectEngineAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = engine
+            if currentConfig?.engineType == engine {
+                item.state = .on
+            }
+            engineMenu.addItem(item)
+        }
+        engineItem.submenu = engineMenu
+        menu.addItem(engineItem)
+        
+        // --- Mode Submenu ---
+        let modeItem = NSMenuItem(title: "⚙️ Mode", action: nil, keyEquivalent: "")
+        let modeMenu = NSMenu()
+        for mode in HotkeyMode.allCases {
+            let item = NSMenuItem(title: mode.displayName, action: #selector(selectModeAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode
+            if currentConfig?.hotkeyMode == mode {
+                item.state = .on
+            }
+            modeMenu.addItem(item)
+        }
+        modeItem.submenu = modeMenu
+        menu.addItem(modeItem)
+        
+        // --- Microphone Submenu ---
+        let micItem = NSMenuItem(title: "🎤 Microphone", action: nil, keyEquivalent: "")
+        let micMenu = NSMenu()
+        
+        // Default microphone
+        let defaultItem = NSMenuItem(title: "Default", action: #selector(selectMicrophoneAction(_:)), keyEquivalent: "")
+        defaultItem.target = self
+        defaultItem.representedObject = "default"
+        if currentConfig?.microphoneId == nil || currentConfig?.microphoneId == "default" {
+            defaultItem.state = .on
+        }
+        micMenu.addItem(defaultItem)
+        
+        // Available microphones
+        for mic in availableMicrophones {
+            let item = NSMenuItem(title: mic.name, action: #selector(selectMicrophoneAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mic.id
+            if currentConfig?.microphoneId == mic.id {
+                item.state = .on
+            }
+            micMenu.addItem(item)
+        }
+        micItem.submenu = micMenu
+        menu.addItem(micItem)
+        
+        // --- Hotkey Info ---
+        let hotkeyDisplay = currentConfig?.hotkey.displayString ?? "⌘⇧Space"
+        let hotkeyItem = NSMenuItem(title: "⌨️ Hotkey: \(hotkeyDisplay)", action: #selector(openSettingsAction), keyEquivalent: "")
+        hotkeyItem.target = self
+        menu.addItem(hotkeyItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        // --- Settings ---
+        let settingsItem = NSMenuItem(title: "⚙️ Settings...", action: #selector(openSettingsAction), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        
+        // --- Quit ---
+        let quitItem = NSMenuItem(title: "🏁 Quit", action: #selector(quitAction), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        // --- Tip ---
+        let tipItem = NSMenuItem(title: "💡 Click the pill to record", action: nil, keyEquivalent: "")
+        tipItem.isEnabled = false
+        menu.addItem(tipItem)
+        
+        // Show menu
+        NSMenu.popUpContextMenu(menu, with: event, for: self.contentView!)
+    }
+    
+    @objc private func selectLanguageAction(_ sender: NSMenuItem) {
+        if let langId = sender.representedObject as? String {
+            onSelectLanguage?(langId)
+        }
+    }
+    
+    @objc private func selectEngineAction(_ sender: NSMenuItem) {
+        if let engine = sender.representedObject as? EngineType {
+            onSelectEngine?(engine)
+        }
+    }
+    
+    @objc private func selectModeAction(_ sender: NSMenuItem) {
+        if let mode = sender.representedObject as? HotkeyMode {
+            onSelectMode?(mode)
+        }
+    }
+    
+    @objc private func selectMicrophoneAction(_ sender: NSMenuItem) {
+        if let micId = sender.representedObject as? String {
+            onSelectMicrophone?(micId)
+        }
+    }
+    
+    @objc private func openSettingsAction() {
         onOpenSettings?()
+    }
+    
+    @objc private func quitAction() {
+        NSApplication.shared.terminate(nil)
     }
 
     override func mouseDown(with event: NSEvent) {
 
-        // Handle Ctrl+Click as Right Click
+        // Handle Ctrl+Click as Right Click -> Show Context Menu
         if event.modifierFlags.contains(.control) {
-            onOpenSettings?()
+            showContextMenu(with: event)
             return
         }
         
@@ -649,13 +796,10 @@ class IndicatorView: NSView {
     
     override func mouseDown(with event: NSEvent) {
 
-        // Handle Ctrl+Click as Right Click at View level just in case
+        // Handle Ctrl+Click as Right Click -> Show Context Menu
         if event.modifierFlags.contains(.control) {
-            // Pass to window via super, or handle?
-            // Better to let Window handle rightMouseDown, but Ctrl-Click is mouseDown.
-            // Let's explicitly ignore it here so it doesn't trigger body click.
-             super.mouseDown(with: event)
-             return
+            (window as? FloatingIndicatorWindow)?.showContextMenu(with: event)
+            return
         }
 
         if state == .recording {
@@ -862,12 +1006,8 @@ class IndicatorView: NSView {
         }
     }
     override func rightMouseDown(with event: NSEvent) {
-        let menu = NSMenu(title: "Context Menu")
-        let settingsItem = NSMenuItem(title: "Ir a configuración", action: #selector(openSettingsAction), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-        
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        // Delegate to the window's context menu
+        (window as? FloatingIndicatorWindow)?.showContextMenu(with: event)
     }
     
     @objc func openSettingsAction() {
