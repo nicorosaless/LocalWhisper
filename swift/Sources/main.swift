@@ -258,18 +258,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         
         onboardingController = OnboardingWindowController()
-        onboardingController?.onComplete = { [weak self] hotkeyConfig, hotkeyMode, language, modelPath in
+        onboardingController?.onComplete = { [weak self] (hotkeyConfig: HotkeyConfig, hotkeyMode: HotkeyMode, language: String, modelPath: String, engineType: EngineType) in
             // CRITICAL: Set isAppStarted IMMEDIATELY (synchronously) to prevent app termination
             // when the onboarding window closes. The rest can be async.
             self?.isAppStarted = true
             
             DispatchQueue.main.async {
-                logDebug("🚀 Onboarding complete: hotkey=\(hotkeyConfig.displayString), lang=\(language), model=\(modelPath)")
+                logDebug("🚀 Onboarding complete: hotkey=\(hotkeyConfig.displayString), lang=\(language), model=\(modelPath), engine=\(engineType.rawValue)")
                 // Save the received config values
                 self?.config.hotkey = hotkeyConfig
                 self?.config.hotkeyMode = hotkeyMode
                 self?.config.language = language
                 self?.config.modelPath = modelPath
+                self?.config.engineType = engineType
                 self?.saveConfig()
                 self?.onboardingController = nil
                 self?.startApp()

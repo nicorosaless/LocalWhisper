@@ -78,6 +78,9 @@ class FloatingIndicatorWindow: NSPanel {
     // Screen tracking
     private var currentScreen: NSScreen?
     private var lastVisibleFrame: NSRect?
+    // Low-frequency screen-follow timer: fires every 5s to reposition the pill
+    // when the mouse has moved to a different screen without triggering hover.
+    private var screenFollowTimer: Timer?
     
     private let loweredPosition: CGFloat = 12 // Height when dock is hidden (more breathing room)
     
@@ -167,9 +170,11 @@ class FloatingIndicatorWindow: NSPanel {
         }
         
         startHoverDetection()
-        // Screen detection: no polling timer needed. The pill repositions via:
+        startScreenFollowTimer()
+        // Screen detection: timer (5s) for multi-monitor follow + notification for connect/disconnect.
         // 1. didChangeScreenParametersNotification (monitor connect/disconnect)
         // 2. ensureOnCorrectScreen() called lazily before recording/hover actions
+        // 3. screenFollowTimer (5s) so the pill follows cursor to a different screen while idle
         
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         
@@ -198,8 +203,27 @@ class FloatingIndicatorWindow: NSPanel {
         animationTimer = nil
         tooltipTimer?.invalidate()
         tooltipTimer = nil
+        screenFollowTimer?.invalidate()
+        screenFollowTimer = nil
     }
     
+    /// Low-frequency timer (5s) so the pill follows the mouse to a different screen
+    /// even when the user doesn't hover over it. Only runs while idle/hovering.
+    private func startScreenFollowTimer() {
+        guard screenFollowTimer == nil else { return }
+        screenFollowTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.ensureOnCorrectScreen()
+        }
+        if let t = screenFollowTimer {
+            RunLoop.main.add(t, forMode: .common)
+        }
+    }
+
+    private func stopScreenFollowTimer() {
+        screenFollowTimer?.invalidate()
+        screenFollowTimer = nil
+    }
+
     /// Lazily check if the pill needs to move to the screen under the mouse cursor.
     /// Called on-demand (before recording, on hover enter) instead of polling with a timer.
     func ensureOnCorrectScreen() {
@@ -582,6 +606,7 @@ class FloatingIndicatorWindow: NSPanel {
             animateToIdleSize()
             indicatorView.setState(.idle)
             stopAnimationTimer()
+            startScreenFollowTimer() // Resume screen-follow when idle
         
         case .hovering:
             break
@@ -590,6 +615,7 @@ class FloatingIndicatorWindow: NSPanel {
             if !silent && (previousState == .idle || previousState == .hovering) {
                 startSound?.play()
             }
+            stopScreenFollowTimer() // No need to follow screens while recording
             ensureOnCorrectScreen()
             indicatorView.setState(.recording)
             startWaveformAnimation()

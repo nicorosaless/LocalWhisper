@@ -24,7 +24,10 @@ struct OnboardingView: View {
     @State private var currentStep: OnboardingStep = .permissions
     @State private var selectedLanguage = "en"
     @State private var searchText = ""
-    @State private var selectedModel: WhisperModel = .small
+    // Engine selection: the user picks WhisperCpp or Qwen3
+    @State private var selectedEngine: EngineType = .whisperCpp
+    // WhisperCpp always uses the "small" model in onboarding
+    private let whisperModel: WhisperModel = .small
     @State private var downloadProgress: Double = 0
     @State private var isDownloading = false
     @State private var downloadComplete = false
@@ -37,7 +40,7 @@ struct OnboardingView: View {
     
     var initialHotkeyConfig: HotkeyConfig
     var initialHotkeyMode: HotkeyMode
-    var onComplete: (HotkeyConfig, HotkeyMode, String, String) -> Void
+    var onComplete: (HotkeyConfig, HotkeyMode, String, String, EngineType) -> Void
     
     private var filteredLanguages: [Language] {
         if searchText.isEmpty {
@@ -121,8 +124,13 @@ struct OnboardingView: View {
                             if !onboardingDoneTriggered {
                                 onboardingDoneTriggered = true
                                 saveSettings()
-                                let modelPath = ModelDownloader.shared.getModelPath(for: selectedModel)
-                                onComplete(localHotkeyConfig, localHotkeyMode, selectedLanguage, modelPath)
+                                let modelPath: String
+                                if selectedEngine == .whisperCpp {
+                                    modelPath = ModelDownloader.shared.getModelPath(for: whisperModel)
+                                } else {
+                                    modelPath = "" // Qwen3 manages its own path
+                                }
+                                onComplete(localHotkeyConfig, localHotkeyMode, selectedLanguage, modelPath, selectedEngine)
                             }
                         }) {
                             HStack(spacing: 8) {
@@ -198,9 +206,20 @@ struct OnboardingView: View {
     }
     
     private func advanceStep() {
-        if currentStep == .modelDownload && !downloadComplete && !ModelDownloader.shared.isModelDownloaded(selectedModel) {
-            startDownload()
-            return
+        if currentStep == .modelDownload && !downloadComplete {
+            // Check if the selected engine already has its model downloaded
+            if selectedEngine == .whisperCpp {
+                if !ModelDownloader.shared.isModelDownloaded(whisperModel) {
+                    startDownload()
+                    return
+                }
+            } else {
+                // Qwen3: check if already downloaded
+                if !selectedEngine.isDownloaded() {
+                    startQwenDownload()
+                    return
+                }
+            }
         }
         
         if let next = OnboardingStep(rawValue: currentStep.rawValue + 1) {
@@ -319,41 +338,22 @@ struct OnboardingView: View {
                     .foregroundColor(.white.opacity(0.5))
             }
             
-            VStack(spacing: 12) {
-                // Search Field
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.white.opacity(0.4))
-                    TextField("Search languages...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .foregroundColor(.white)
-                }
-                .padding(10)
-                .background(Color.white.opacity(0.05))
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                )
-                .padding(.horizontal, 40)
-
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(filteredLanguages) { lang in
-                            languageButton(code: lang.id, name: lang.name)
-                        }
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(Language.all) { lang in
+                        languageButton(code: lang.id, name: lang.name)
                     }
-                    .padding(8)
                 }
-                .frame(height: 240)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                )
-                .padding(.horizontal, 40)
+                .padding(8)
             }
+            .frame(height: 240)
+            .background(Color.white.opacity(0.02))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+            )
+            .padding(.horizontal, 40)
         }
     }
     
@@ -390,7 +390,7 @@ struct OnboardingView: View {
                     .font(.system(size: 28, weight: .semibold))
                     .foregroundColor(.white)
                 
-                Text("Select the Whisper model to download.\nLarger models are more accurate but slower.")
+                Text("Choose your transcription engine.")
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.5))
                     .multilineTextAlignment(.center)
@@ -398,16 +398,25 @@ struct OnboardingView: View {
             
             if !isDownloading && !downloadComplete {
                 VStack(spacing: 8) {
-                    ForEach(WhisperModel.allCases, id: \.self) { model in
-                        modelOption(model)
-                    }
+                    engineOption(
+                        engine: .whisperCpp,
+                        title: "Whisper.cpp",
+                        subtitle: "Offline · \(whisperModel.downloadSize)",
+                        detail: "Great accuracy, works without internet"
+                    )
+                    engineOption(
+                        engine: .qwenSmall,
+                        title: "Qwen3 0.6B",
+                        subtitle: "Offline · \(EngineType.qwenSmall.downloadSize)",
+                        detail: "Faster inference on Apple Silicon"
+                    )
                 }
                 .padding(.horizontal, 40)
             }
             
             if isDownloading {
                 VStack(spacing: 12) {
-                    Text("Downloading \(selectedModel.name)...")
+                    Text("Downloading \(selectedEngine == .whisperCpp ? whisperModel.name : selectedEngine.displayName)...")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.white)
                     
@@ -431,7 +440,7 @@ struct OnboardingView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark")
                         .font(.system(size: 12, weight: .semibold))
-                    Text("Ready with \(selectedModel.name) model")
+                    Text("Ready with \(selectedEngine == .whisperCpp ? whisperModel.name : selectedEngine.displayName)")
                 }
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.green)
@@ -439,15 +448,15 @@ struct OnboardingView: View {
         }
     }
 
-    private func modelOption(_ model: WhisperModel) -> some View {
-        Button(action: { selectedModel = model }) {
+    private func engineOption(engine: EngineType, title: String, subtitle: String, detail: String) -> some View {
+        Button(action: { selectedEngine = engine }) {
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text(model.name)
+                        Text(title)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
-                        Text(model.downloadSize)
+                        Text(subtitle)
                             .font(.system(size: 10, weight: .medium))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -455,12 +464,12 @@ struct OnboardingView: View {
                             .cornerRadius(4)
                             .foregroundColor(.white.opacity(0.6))
                     }
-                    Text(model.description)
+                    Text(detail)
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.4))
                 }
                 Spacer()
-                if selectedModel == model {
+                if selectedEngine == engine {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.white)
                 } else {
@@ -470,11 +479,11 @@ struct OnboardingView: View {
                 }
             }
             .padding(12)
-            .background(selectedModel == model ? Color.white.opacity(0.08) : Color.clear)
+            .background(selectedEngine == engine ? Color.white.opacity(0.08) : Color.clear)
             .cornerRadius(10)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(selectedModel == model ? Color.white.opacity(0.2) : Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(selectedEngine == engine ? Color.white.opacity(0.2) : Color.white.opacity(0.05), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -630,7 +639,7 @@ struct OnboardingView: View {
     
     private func startDownload() {
         isDownloading = true
-        ModelDownloader.shared.downloadModel(selectedModel) { progress in
+        ModelDownloader.shared.downloadModel(whisperModel) { progress in
             DispatchQueue.main.async {
                 self.downloadProgress = progress
             }
@@ -639,7 +648,32 @@ struct OnboardingView: View {
                 self.isDownloading = false
                 self.downloadComplete = success
                 if success {
-                    advanceStep()
+                    self.advanceStep()
+                }
+            }
+        }
+    }
+
+    private func startQwenDownload() {
+        guard let modelId = EngineType.qwenSmall.modelId else { return }
+        isDownloading = true
+        let cacheDir = EngineType.qwenCacheDirectory()
+            .appendingPathComponent(modelId.replacingOccurrences(of: "/", with: "--"))
+        Task {
+            do {
+                try await QwenDownloadManager.downloadFiles(modelId: modelId, to: cacheDir) { progress in
+                    DispatchQueue.main.async {
+                        self.downloadProgress = progress
+                    }
+                }
+                await MainActor.run {
+                    self.isDownloading = false
+                    self.downloadComplete = true
+                    self.advanceStep()
+                }
+            } catch {
+                await MainActor.run {
+                    self.isDownloading = false
                 }
             }
         }
@@ -659,7 +693,7 @@ class OnboardingWindowController {
     private var window: NSWindow?
     private var hostingView: NSHostingView<OnboardingView>?
     
-    var onComplete: ((HotkeyConfig, HotkeyMode, String, String) -> Void)?
+    var onComplete: ((HotkeyConfig, HotkeyMode, String, String, EngineType) -> Void)?
     
     func show(initialHotkeyConfig: HotkeyConfig, initialHotkeyMode: HotkeyMode) {
         // print("🎯 OnboardingWindowController.show() called")
@@ -669,10 +703,10 @@ class OnboardingWindowController {
         let onboardingView = OnboardingView(
             initialHotkeyConfig: initialHotkeyConfig,
             initialHotkeyMode: initialHotkeyMode,
-            onComplete: { [weak self] hotkeyConfig, hotkeyMode, language, modelPath in
+            onComplete: { [weak self] hotkeyConfig, hotkeyMode, language, modelPath, engineType in
                 // CRITICAL: Call onComplete FIRST (sets isAppStarted=true), THEN close window
                 // Otherwise app terminates before startApp() runs
-                self?.onComplete?(hotkeyConfig, hotkeyMode, language, modelPath)
+                self?.onComplete?(hotkeyConfig, hotkeyMode, language, modelPath, engineType)
                 self?.close()
             }
         )
