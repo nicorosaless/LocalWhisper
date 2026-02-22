@@ -2,6 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import AVFoundation
 import SwiftUI
+import ServiceManagement
 
 
 func getPerformanceCoreCount() -> Int {
@@ -471,6 +472,63 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             UserDefaults.standard.set(true, forKey: "hasShownFirstLaunchToast")
         }
+        
+        // Register for system wake notification to recover audio and engine after sleep/restart
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+    }
+    
+    @objc func handleSystemWake() {
+        logDebug("⏰ System woke from sleep — recovering audio and engine state...")
+        
+        // 1. Re-enable CGEvent tap immediately (CGEvent APIs are thread-safe)
+        if let tap = eventTap, !CGEvent.tapIsEnabled(tap: tap) {
+            CGEvent.tapEnable(tap: tap, enable: true)
+            logDebug("✅ CGEvent tap re-enabled after wake")
+        }
+        
+        // 2. UI and engine operations must run on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Refresh available microphones list (devices may have changed)
+            self.floatingIndicator.availableMicrophones = self.getAvailableMicrophones()
+            
+            // Check if the active engine needs to be reloaded
+            if let engine = self.activeEngine {
+                var needsReload = false
+                
+                // For Qwen3: check if the Python process is still running
+                if #available(macOS 14.0, *), let qwenEngine = engine as? Qwen3ASREngine {
+                    if !qwenEngine.isPythonProcessRunning {
+                        logDebug("⚠️ Qwen3 Python process died during sleep — reloading engine...")
+                        needsReload = true
+                    }
+                }
+                
+                // For any engine that reports itself as not loaded
+                if !engine.status.isLoaded {
+                    logDebug("⚠️ Engine not loaded after wake — reloading...")
+                    needsReload = true
+                }
+                
+                if needsReload {
+                    self.updateStatusMenuItem("Reloading engine...")
+                    Task { [weak self] in
+                        await self?.loadEngine()
+                        await MainActor.run {
+                            self?.updateStatusMenuItem("Ready")
+                        }
+                    }
+                }
+            }
+            
+            logDebug("✅ Wake recovery complete")
+        }
     }
     
     func updateMenu() {
@@ -853,7 +911,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             audioRecorder = try AVAudioRecorder(url: tempAudioURL!, settings: settings)
             audioRecorder?.isMeteringEnabled = true
-            audioRecorder?.record()
+            let recordStarted = audioRecorder?.record() ?? false
+            
+            if !recordStarted {
+                logDebug("⚠️ AVAudioRecorder.record() returned false — audio system may not be ready")
+                isRecording = false
+                audioRecorder = nil
+                if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+                    image.isTemplate = true
+                    statusItem.button?.image = image
+                }
+                updateStatusMenuItem("Error: Mic unavailable")
+                floatingIndicator.setState(.idle)
+                // Retry after a short delay to let the audio subsystem recover (e.g. after wake from sleep)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    self?.updateStatusMenuItem("Ready")
+                }
+                return
+            }
             
             // Start audio level monitoring
             startAudioLevelMonitoring()
@@ -862,11 +937,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             logDebug("Error recording: \(error)")
             isRecording = false
+            audioRecorder = nil
             if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
                 image.isTemplate = true
                 statusItem.button?.image = image
             }
+            updateStatusMenuItem("Error: Mic unavailable")
             floatingIndicator.setState(.idle)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.updateStatusMenuItem("Ready")
+            }
         }
     }
     
@@ -1006,6 +1086,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func transcribe() {
         guard let audioURL = tempAudioURL else { return }
         
+        // Validate that the audio file has real content (WAV header = 44 bytes minimum)
+        // An empty or near-empty file means the audio system didn't capture anything (e.g. after wake from sleep)
+        let minAudioBytes = 1024 // Less than 1KB almost certainly means no audio captured
+        if let fileSize = try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int,
+           fileSize < minAudioBytes {
+            logDebug("⚠️ Audio file too small (\(fileSize) bytes) — mic likely not capturing. Aborting transcription.")
+            DispatchQueue.main.async {
+                if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+                    image.isTemplate = true
+                    self.statusItem.button?.image = image
+                }
+                self.updateStatusMenuItem("Error: No audio captured")
+                self.floatingIndicator.setState(.idle)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    self?.updateStatusMenuItem("Ready")
+                }
+            }
+            return
+        }
+        
         logDebug("🚀 Starting transcription...")
         logDebug("📁 Audio file: \(audioURL.path)")
         logDebug("⚙️ Language: \(config.language)")
@@ -1019,16 +1119,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch {
                     logDebug("❌ Engine transcription failed: \(error)")
                     // Fallback to legacy whisper-cli
-                    transcribeWithWhisperCli(audioURL: audioURL)
+                    await transcribeWithWhisperCli(audioURL: audioURL)
                 }
             }
         } else {
             logDebug("⚠️ Engine not loaded, using legacy whisper-cli")
-            transcribeWithWhisperCli(audioURL: audioURL)
+            Task {
+                await transcribeWithWhisperCli(audioURL: audioURL)
+            }
         }
     }
     
-    func transcribeWithWhisperCli(audioURL: URL) {
+    func transcribeWithWhisperCli(audioURL: URL) async {
         logDebug("🛠 Using whisper-cli for transcription...")
 
         guard let whisperPath = getWhisperCliPath() else {
@@ -1046,127 +1148,155 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         logDebug("🛠 CLI Path: \(whisperPath)")
         
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            // Check audio file size
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: audioURL.path) {
-                let size = attrs[.size] as? Int64 ?? 0
-                logDebug("🎙️ Audio file size: \(size) bytes")
-            }
-            
-            // Optimal thread count: Target Performance Cores
-            let perfCores = getPerformanceCoreCount()
-            let usageThreads = perfCores > 0 ? perfCores : ProcessInfo.processInfo.processorCount
-            logDebug("⚡ Using \(usageThreads) threads (Perf Cores) for low latency")
-            
-            // Build language-specific prompt for better accuracy
-            let qualityPrompt: String
-            if config.language == "es" {
-                qualityPrompt = "Esta es una transcripción de alta calidad en español, con puntuación correcta y mayúsculas apropiadas."
-            } else if config.language == "en" {
-                qualityPrompt = "This is a high-quality transcription in English, with correct punctuation and proper capitalization."
+        // Check audio file size
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: audioURL.path) {
+            let size = attrs[.size] as? Int64 ?? 0
+            logDebug("🎙️ Audio file size: \(size) bytes")
+        }
+        
+        // Optimal thread count: Target Performance Cores
+        let perfCores = getPerformanceCoreCount()
+        let usageThreads = perfCores > 0 ? perfCores : ProcessInfo.processInfo.processorCount
+        logDebug("⚡ Using \(usageThreads) threads (Perf Cores) for low latency")
+        
+        // Build language-specific prompt for better accuracy
+        let qualityPrompt: String
+        if config.language == "es" {
+            qualityPrompt = "Esta es una transcripción de alta calidad en español, con puntuación correcta y mayúsculas apropiadas."
+        } else if config.language == "en" {
+            qualityPrompt = "This is a high-quality transcription in English, with correct punctuation and proper capitalization."
+        } else {
+            qualityPrompt = "High-quality transcription with correct punctuation."
+        }
+        
+        // Find the actual model file - modelPath might be empty or a directory if Qwen3 was used
+        var actualModelPath = modelPath
+        if !actualModelPath.hasSuffix(".bin") {
+            // modelPath might be a directory like "models" or "/path/to/LocalWhisper/models"
+            var modelsDir = modelPath
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: modelsDir, isDirectory: &isDir), isDir.boolValue {
+                // modelPath IS a directory, use it directly
             } else {
-                qualityPrompt = "High-quality transcription with correct punctuation."
+                // modelPath might be empty or invalid, try the default location
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                modelsDir = appSupport.appendingPathComponent("LocalWhisper/models").path
             }
             
-            let cmd = [
-                whisperPath,
-                "-m", modelPath,
-                "-f", audioURL.path,
-                "-nt",                          // No timestamps
-                "-t", String(usageThreads),     // Use Performance Cores
-                "-bs", "2",                     // Beam size: 2 is sufficient for high quality dictation & fast speed
-                "-bo", "0",                     // Best of: 0 (disabled) to rely on beam search (fastest)
-                "-lpt", "-1.0",                 // Log probability threshold: relaxed (was -0.5)
-                "--prompt", qualityPrompt,      // Language-specific context
-                "-l", config.language
-            ]
+            if let contents = try? FileManager.default.contentsOfDirectory(atPath: modelsDir) {
+                if let binFile = contents.first(where: { $0.hasSuffix(".bin") }) {
+                    actualModelPath = modelsDir + "/" + binFile
+                    logDebug("🔍 Auto-detected model file: \(actualModelPath)")
+                }
+            }
+        }
+        
+        let cmd = [
+            whisperPath,
+            "-m", actualModelPath,
+            "-f", audioURL.path,
+            "-nt",                          // No timestamps
+            "-t", String(usageThreads),     // Use Performance Cores
+            "-bs", "2",                     // Beam size: 2 is sufficient for high quality dictation & fast speed
+            "-bo", "0",                     // Best of: 0 (disabled) to rely on beam search (fastest)
+            "-lpt", "-1.0",                 // Log probability threshold: relaxed (was -0.5)
+            "--prompt", qualityPrompt,      // Language-specific context
+            "-l", config.language
+        ]
+        
+        logDebug("🏃 Running: \(cmd.joined(separator: " "))")
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: whisperPath)
+        process.arguments = Array(cmd.dropFirst())
+        
+        // Fix library loading for packaged app by forcing DYLD_LIBRARY_PATH
+        var env = ProcessInfo.processInfo.environment
+        if let resourcePath = Bundle.main.resourcePath {
+            let libPath = resourcePath + "/lib"
+            env["DYLD_LIBRARY_PATH"] = libPath
+            process.environment = env
+            logDebug("🔧 Set DYLD_LIBRARY_PATH: \(libPath)")
+        }
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        
+        do {
+            try process.run()
             
-            logDebug("🏃 Running: \(cmd.joined(separator: " "))")
-            
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: whisperPath)
-            process.arguments = Array(cmd.dropFirst())
-            
-            // Fix library loading for packaged app by forcing DYLD_LIBRARY_PATH
-            var env = ProcessInfo.processInfo.environment
-            if let resourcePath = Bundle.main.resourcePath {
-                let libPath = resourcePath + "/lib"
-                env["DYLD_LIBRARY_PATH"] = libPath
-                process.environment = env
-                logDebug("🔧 Set DYLD_LIBRARY_PATH: \(libPath)")
+            // Use async pattern instead of blocking waitUntilExit
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                process.terminationHandler = { _ in
+                    continuation.resume()
+                }
             }
             
-            let pipe = Pipe()
-            process.standardOutput = pipe
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
             
-            let errorPipe = Pipe()
-            process.standardError = errorPipe
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
             
-            do {
-                try process.run()
-                process.waitUntilExit()
-                
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-                
-                if !output.isEmpty { logDebug("📤 STDOUT:\n\(output)") }
-                if !errorOutput.isEmpty { logDebug("⚠️ STDERR:\n\(errorOutput)") }
-                
-                let text = parseWhisperOutput(output)
-                
-                DispatchQueue.main.async {
-                    if !text.isEmpty {
-                        logDebug("✅ Transcription successful: \(text)")
-                        
-                        // Copy to clipboard
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(text, forType: .string)
-                        
-                        // Update UI immediately on main thread
-                        self.updateStatusMenuItem("Ready")
-                        self.floatingIndicator.setState(.idle)
-                        
-                        // Auto-paste if enabled — run off main thread to avoid blocking UI with usleep
-                        if self.config.autoPaste {
-                            let targetApp = self.lastActiveApplication
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                Thread.sleep(forTimeInterval: 0.010) // 10ms clipboard settle
-                                if let app = targetApp {
-                                    logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
-                                    self.pasteWithFallback(text: text, targetApp: app)
-                                } else {
-                                    logDebug("📋 Pasting blindly (No tracked app)")
-                                    self.pasteWithFallback(text: text, targetApp: nil)
-                                }
+            if !output.isEmpty { logDebug("📤 STDOUT:\n\(output)") }
+            if !errorOutput.isEmpty { logDebug("⚠️ STDERR:\n\(errorOutput)") }
+            
+            let text = parseWhisperOutput(output)
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                if !text.isEmpty {
+                    logDebug("✅ Transcription successful: \(text)")
+                    
+                    // Copy to clipboard
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    
+                    // Update UI immediately on main thread
+                    self.updateStatusMenuItem("Ready")
+                    self.floatingIndicator.setState(.idle)
+                    
+                    // Auto-paste if enabled
+                    if self.config.autoPaste {
+                        let targetApp = self.lastActiveApplication
+                        Task { @MainActor in
+                            Thread.sleep(forTimeInterval: 0.010)
+                            if let app = targetApp {
+                                logDebug("📋 Pasting to \(app.localizedName ?? "Unknown") with fallback strategies")
+                                self.pasteWithFallback(text: text, targetApp: app)
+                            } else {
+                                logDebug("📋 Pasting blindly (No tracked app)")
+                                self.pasteWithFallback(text: text, targetApp: nil)
                             }
                         }
-                    } else {
-                        logDebug("❓ No text detected in transcription")
-                        self.updateStatusMenuItem("No text")
-                        self.floatingIndicator.setState(.idle)
                     }
-                    
-                    if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
-                        image.isTemplate = true
-                        self.statusItem.button?.image = image
-                    }
-                }
-                
-                try? FileManager.default.removeItem(at: audioURL)
-                
-            } catch {
-                logDebug("💀 Fatal error in transcription: \(error)")
-                DispatchQueue.main.async {
-                    if let image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "Error") {
-                         image.isTemplate = true
-                         self.statusItem.button?.image = image
-                    }
-                    self.updateStatusMenuItem("Error")
+                } else {
+                    logDebug("❓ No text detected in transcription")
+                    self.updateStatusMenuItem("No text")
                     self.floatingIndicator.setState(.idle)
                 }
+                
+                if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Local Whisper") {
+                    image.isTemplate = true
+                    self.statusItem.button?.image = image
+                }
+            }
+            
+            try? FileManager.default.removeItem(at: audioURL)
+            
+        } catch {
+            logDebug("💀 Fatal error in transcription: \(error)")
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                if let image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "Error") {
+                     image.isTemplate = true
+                     self.statusItem.button?.image = image
+                }
+                self.updateStatusMenuItem("Error")
+                self.floatingIndicator.setState(.idle)
             }
         }
     }
@@ -1242,58 +1372,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Launch at Login
     
     func updateLaunchAtLogin() {
-        // Use System Events Login Items via osascript — this adds/removes the app from
-        // System Settings → General → Login Items. This is the ONLY method that works
-        // for ad-hoc signed apps (no Team ID) without triggering the macOS
-        // "running in the background" notification. LaunchAgent plists always show
-        // that notification regardless of KeepAlive setting.
-        //
-        // Also clean up any LaunchAgent plist we may have written in previous versions.
-        let label = "com.nicorosaless.LocalWhisper"
-        let plistURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
-        if FileManager.default.fileExists(atPath: plistURL.path) {
-            try? FileManager.default.removeItem(at: plistURL)
-            logDebug("🧹 Removed legacy LaunchAgent plist")
-        }
-
-        // Determine the .app bundle path
-        let appBundlePath: String
-        if FileManager.default.fileExists(atPath: "/Applications/LocalWhisper.app") {
-            appBundlePath = "/Applications/LocalWhisper.app"
-        } else {
-            appBundlePath = Bundle.main.bundlePath
-        }
-
-        let script: String
-        if config.launchAtLogin {
-            script = """
-            tell application "System Events"
-                if not (exists login item "LocalWhisper") then
-                    make login item at end with properties {path:"\(appBundlePath)", hidden:false}
-                end if
-            end tell
-            """
-        } else {
-            script = """
-            tell application "System Events"
-                if exists login item "LocalWhisper" then
-                    delete login item "LocalWhisper"
-                end if
-            end tell
-            """
-        }
-
-        DispatchQueue.global(qos: .utility).async {
-            var error: NSDictionary?
-            if let scriptObj = NSAppleScript(source: script) {
-                scriptObj.executeAndReturnError(&error)
-                if let err = error {
-                    logDebug("❌ Login item script error: \(err)")
-                } else {
-                    logDebug("✅ Login item \(self.config.launchAtLogin ? "added" : "removed") via System Events")
-                }
+        // Use SMAppService — modern API (macOS 13+) that doesn't require AppleScript/System Events
+        // or any special permissions. Clean, simple, and reliable.
+        let service = SMAppService.mainApp
+        
+        do {
+            if config.launchAtLogin {
+                try service.register()
+                logDebug("✅ Login item registered via SMAppService")
+            } else {
+                try service.unregister()
+                logDebug("✅ Login item removed via SMAppService")
             }
+        } catch {
+            logDebug("❌ Login item error: \(error.localizedDescription)")
         }
     }
     

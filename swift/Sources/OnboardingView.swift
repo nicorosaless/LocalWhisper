@@ -609,7 +609,7 @@ struct OnboardingView: View {
 
     private func startPermissionPolling() {
         pollingTimer?.invalidate()
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             DispatchQueue.main.async {
                 // Only poll during the permissions step to avoid unnecessary work
                 guard self.currentStep == .permissions else { return }

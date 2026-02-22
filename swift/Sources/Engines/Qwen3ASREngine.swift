@@ -151,6 +151,11 @@ class Qwen3ASREngine: TranscriptionEngine {
         status.isLoaded = false
     }
     
+    /// Public property to let callers check if the Python subprocess is still alive.
+    var isPythonProcessRunning: Bool {
+        return pythonProcess?.isRunning ?? false
+    }
+    
     // MARK: - Python Process Management
     
     private func startPythonProcess(scriptPath: String, modelDir: String) throws {
@@ -161,8 +166,8 @@ class Qwen3ASREngine: TranscriptionEngine {
         process.executableURL = URL(fileURLWithPath: pythonPath)
         process.arguments = [
             scriptPath,
-            "--model-dir", modelDir,
-            "--warmup"
+            "--model-dir", modelDir
+            // Warmup disabled - causes crash with certain model versions
         ]
         
         // Set up environment

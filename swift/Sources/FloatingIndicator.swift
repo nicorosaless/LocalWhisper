@@ -205,6 +205,7 @@ class FloatingIndicatorWindow: NSPanel {
         tooltipTimer = nil
         screenFollowTimer?.invalidate()
         screenFollowTimer = nil
+        NotificationCenter.default.removeObserver(self)
     }
     
     /// Low-frequency timer (5s) so the pill follows the mouse to a different screen

@@ -62,6 +62,28 @@ class WhisperCppEngine: TranscriptionEngine {
             throw TranscriptionError.modelLoadFailed("whisper-cli not found")
         }
         
+        // Auto-detect model file if modelPath is a directory or doesn't end with .bin
+        var actualModelPath = modelPath
+        if !actualModelPath.hasSuffix(".bin") {
+            // modelPath might be a directory like "models" or "/path/to/LocalWhisper/models"
+            var modelsDir = modelPath
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: modelsDir, isDirectory: &isDir), isDir.boolValue {
+                // modelPath IS a directory, use it directly
+            } else {
+                // modelPath might be empty or invalid, try the default location
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                modelsDir = appSupport.appendingPathComponent("LocalWhisper/models").path
+            }
+            
+            if let contents = try? FileManager.default.contentsOfDirectory(atPath: modelsDir) {
+                if let binFile = contents.first(where: { $0.hasSuffix(".bin") }) {
+                    actualModelPath = modelsDir + "/" + binFile
+                    logDebug("[WhisperCppEngine] Auto-detected model: \(actualModelPath)")
+                }
+            }
+        }
+        
         let qualityPrompt: String
         switch language {
         case "es":
@@ -78,7 +100,7 @@ class WhisperCppEngine: TranscriptionEngine {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: whisperCliPath)
         process.arguments = [
-            "-m", modelPath,
+            "-m", actualModelPath,
             "-f", audioURL.path,
             "-nt",
             "-t", String(threads),
