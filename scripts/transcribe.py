@@ -19,10 +19,13 @@ Usage:
 """
 
 import argparse
+import gc
 import glob
 import json
 import math
 import os
+import resource
+import subprocess
 import sys
 import time
 import warnings
@@ -45,6 +48,55 @@ if hasattr(mx, "set_warnings_enabled"):
 
 import mlx.nn as nn
 import numpy as np
+
+
+# =============================================================================
+# Runtime tuning knobs (quality-first, RAM-aware)
+# =============================================================================
+
+
+FAST_LATENCY_MAX_SECONDS = 30.0
+COMFORT_MAX_SECONDS = 40.0
+
+MAX_TOKENS_FAST = 512
+MAX_TOKENS_COMFORT = 640
+MAX_TOKENS_LONG = 768
+MAX_TOKENS_HARD_CAP = 1024
+
+CAP_HIT_RETRY_MULTIPLIER = 1.5
+
+QUALITY_RETRY_MIN_SECONDS = 20.0
+QUALITY_RETRY_MIN_CHARS_PER_SEC = 1.6
+QUALITY_RETRY_TOKEN_MULTIPLIER = 1.25
+
+
+def replace_audio_tokens_in_embeddings(
+    inputs_embeds: mx.array,
+    input_ids: mx.array,
+    audio_features: mx.array,
+    audio_token_id: int,
+) -> mx.array:
+    """Replace <|audio_pad|> token embeddings with audio features, minimizing temp allocations."""
+    audio_token_mask = input_ids == audio_token_id
+    if not audio_token_mask.any():
+        return inputs_embeds
+
+    _, _, hidden_dim = inputs_embeds.shape
+    flat_mask_np = np.array(audio_token_mask.reshape(-1))
+    audio_indices = np.nonzero(flat_mask_np)[0]
+    if len(audio_indices) == 0 or audio_features.shape[0] == 0:
+        return inputs_embeds
+
+    num_to_replace = min(len(audio_indices), audio_features.shape[0])
+    flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
+    indices = mx.array(audio_indices[:num_to_replace])
+    replacement = audio_features[:num_to_replace].astype(flat_embeds.dtype)
+
+    # MLX ArrayAt supports add(); use delta scatter to avoid full-size temp masks.
+    current = flat_embeds[indices]
+    delta = replacement - current
+    flat_embeds = flat_embeds.at[indices].add(delta)
+    return flat_embeds.reshape(inputs_embeds.shape)
 
 
 # =============================================================================
@@ -93,26 +145,14 @@ class ModelConfig:
         if audio_config is None:
             self.audio_config = AudioEncoderConfig()
         elif isinstance(audio_config, dict):
-            self.audio_config = AudioEncoderConfig(
-                **{
-                    k: v
-                    for k, v in audio_config.items()
-                    if k in AudioEncoderConfig.__init__.__code__.co_varnames
-                }
-            )
+            self.audio_config = AudioEncoderConfig(**audio_config)
         else:
             self.audio_config = audio_config
 
         if text_config is None:
             self.text_config = TextConfig()
         elif isinstance(text_config, dict):
-            self.text_config = TextConfig(
-                **{
-                    k: v
-                    for k, v in text_config.items()
-                    if k in TextConfig.__init__.__code__.co_varnames
-                }
-            )
+            self.text_config = TextConfig(**text_config)
         else:
             self.text_config = text_config
 
@@ -526,25 +566,12 @@ class Qwen3ASRModel(nn.Module):
             ).astype(inputs_embeds.dtype)
             audio_token_mask = input_ids == self.config.audio_token_id
             if audio_token_mask.any():
-                batch_size, seq_len, hidden_dim = inputs_embeds.shape
-                flat_mask_np = np.array(audio_token_mask.reshape(-1))
-                audio_indices = np.nonzero(flat_mask_np)[0]
-                if len(audio_indices) > 0 and audio_features.shape[0] > 0:
-                    num_to_replace = min(len(audio_indices), audio_features.shape[0])
-                    flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
-                    indices = mx.array(audio_indices[:num_to_replace])
-                    replacement = (
-                        mx.zeros_like(flat_embeds)
-                        .at[indices]
-                        .add(audio_features[:num_to_replace])
-                    )
-                    mask = (
-                        mx.zeros((flat_embeds.shape[0],), dtype=flat_embeds.dtype)
-                        .at[indices]
-                        .add(1)
-                    )
-                    flat_embeds = mx.where(mask[:, None] > 0, replacement, flat_embeds)
-                    inputs_embeds = flat_embeds.reshape(batch_size, seq_len, hidden_dim)
+                inputs_embeds = replace_audio_tokens_in_embeddings(
+                    inputs_embeds=inputs_embeds,
+                    input_ids=input_ids,
+                    audio_features=audio_features,
+                    audio_token_id=self.config.audio_token_id,
+                )
 
         hidden_states = self.model(inputs_embeds=inputs_embeds, cache=cache)
         return (
@@ -665,7 +692,7 @@ def load_model(model_dir: str):
 
 
 def transcribe_audio(
-    model, tokenizer, feature_extractor, audio_np, language="English", max_tokens=8192
+    model, tokenizer, feature_extractor, audio_np, language="English", max_tokens=384
 ):
     """Transcribe audio samples (float32 numpy array, 16kHz) to text."""
     from mlx_lm.generate import generate_step
@@ -702,29 +729,12 @@ def transcribe_audio(
     mx.eval(audio_features)
 
     inputs_embeds = model.model.embed_tokens(input_ids)
-    audio_features = audio_features.astype(inputs_embeds.dtype)
-    audio_token_mask = input_ids == model.config.audio_token_id
-
-    if audio_token_mask.any():
-        batch_size, seq_len, hidden_dim = inputs_embeds.shape
-        flat_mask_np = np.array(audio_token_mask.reshape(-1))
-        audio_indices = np.nonzero(flat_mask_np)[0]
-        if len(audio_indices) > 0:
-            num_to_replace = min(len(audio_indices), audio_features.shape[0])
-            flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
-            indices = mx.array(audio_indices[:num_to_replace])
-            replacement = (
-                mx.zeros_like(flat_embeds)
-                .at[indices]
-                .add(audio_features[:num_to_replace])
-            )
-            mask = (
-                mx.zeros((flat_embeds.shape[0],), dtype=flat_embeds.dtype)
-                .at[indices]
-                .add(1)
-            )
-            flat_embeds = mx.where(mask[:, None] > 0, replacement, flat_embeds)
-            inputs_embeds = flat_embeds.reshape(batch_size, seq_len, hidden_dim)
+    inputs_embeds = replace_audio_tokens_in_embeddings(
+        inputs_embeds=inputs_embeds,
+        input_ids=input_ids,
+        audio_features=audio_features,
+        audio_token_id=model.config.audio_token_id,
+    )
 
     mx.eval(inputs_embeds)
     input_embeddings = inputs_embeds[0]
@@ -732,17 +742,94 @@ def transcribe_audio(
 
     eos_token_ids = [151645, 151643]
     parts = []
+    generated_tokens = 0
+    eos_reached = False
     for token, _ in generate_step(
         prompt=prompt_ids,
         input_embeddings=input_embeddings,
         model=model,
         max_tokens=max_tokens,
     ):
+        generated_tokens += 1
         if token in eos_token_ids:
+            eos_reached = True
             break
         parts.append(tokenizer.decode([int(token)]))
 
-    return "".join(parts).strip()
+    text = "".join(parts).strip()
+    cap_hit = generated_tokens >= max_tokens and not eos_reached
+
+    del audio_inputs
+    del input_features
+    del feature_attention_mask
+    del audio_lengths
+    del aftercnn_lens
+    del input_ids
+    del audio_features
+    del inputs_embeds
+    del input_embeddings
+    del prompt_ids
+    if hasattr(mx, "clear_cache"):
+        mx.clear_cache()
+    elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+        mx.metal.clear_cache()
+    gc.collect()
+
+    return text, cap_hit, generated_tokens
+
+
+def select_max_tokens(duration_seconds: float) -> int:
+    if duration_seconds <= FAST_LATENCY_MAX_SECONDS:
+        return MAX_TOKENS_FAST
+    if duration_seconds <= COMFORT_MAX_SECONDS:
+        return MAX_TOKENS_COMFORT
+    return MAX_TOKENS_LONG
+
+
+def next_retry_max_tokens(current_max_tokens: int) -> int:
+    return min(
+        MAX_TOKENS_HARD_CAP,
+        max(
+            current_max_tokens + 1,
+            int(math.ceil(current_max_tokens * CAP_HIT_RETRY_MULTIPLIER)),
+        ),
+    )
+
+
+def should_quality_retry(text: str, duration_seconds: float, cap_hit: bool) -> bool:
+    if cap_hit:
+        return False
+    if duration_seconds < QUALITY_RETRY_MIN_SECONDS:
+        return False
+    compact = "".join(text.split())
+    if not compact:
+        return False
+    min_chars = duration_seconds * QUALITY_RETRY_MIN_CHARS_PER_SEC
+    return len(compact) < min_chars
+
+
+def quality_retry_max_tokens(current_max_tokens: int) -> int:
+    return min(
+        MAX_TOKENS_HARD_CAP,
+        max(
+            current_max_tokens + 1,
+            int(math.ceil(current_max_tokens * QUALITY_RETRY_TOKEN_MULTIPLIER)),
+        ),
+    )
+
+
+def rss_megabytes() -> float:
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            text=True,
+        ).strip()
+        return float(out) / 1024.0
+    except Exception:
+        ru_maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return ru_maxrss / (1024.0 * 1024.0)
+        return ru_maxrss / 1024.0
 
 
 # =============================================================================
@@ -789,7 +876,7 @@ def main():
 
     log(f"[transcribe.py] Loading model from {args.model_dir}...")
     t0 = time.time()
-    model, tokenizer, feature_extractor, config = load_model(args.model_dir)
+    model, tokenizer, feature_extractor, _ = load_model(args.model_dir)
     load_time = time.time() - t0
     log(f"[transcribe.py] Model loaded in {load_time:.1f}s")
 
@@ -840,16 +927,77 @@ def main():
 
         try:
             t0 = time.time()
+            rss_before = rss_megabytes()
             audio = load_wav(wav_path)
             duration = len(audio) / 16000.0
             log(f"[transcribe.py] Transcribing {wav_path} ({duration:.1f}s audio)...")
 
-            text = transcribe_audio(
-                model, tokenizer, feature_extractor, audio, language
+            initial_max_tokens = select_max_tokens(duration)
+            text, cap_hit, generated_tokens = transcribe_audio(
+                model,
+                tokenizer,
+                feature_extractor,
+                audio,
+                language,
+                max_tokens=initial_max_tokens,
             )
+
+            retry_used = False
+            quality_retry_used = False
+            final_max_tokens = initial_max_tokens
+            if cap_hit and initial_max_tokens < MAX_TOKENS_HARD_CAP:
+                retry_used = True
+                final_max_tokens = next_retry_max_tokens(initial_max_tokens)
+                log(
+                    "[transcribe.py] cap_hit=true; retrying with "
+                    f"max_tokens={final_max_tokens}"
+                )
+                text, cap_hit, generated_tokens = transcribe_audio(
+                    model,
+                    tokenizer,
+                    feature_extractor,
+                    audio,
+                    language,
+                    max_tokens=final_max_tokens,
+                )
+
+            if should_quality_retry(text, duration, cap_hit):
+                quality_retry_used = True
+                quality_max_tokens = quality_retry_max_tokens(final_max_tokens)
+                if quality_max_tokens > final_max_tokens:
+                    log(
+                        "[transcribe.py] quality_retry=true; retrying with "
+                        f"max_tokens={quality_max_tokens}"
+                    )
+                    quality_text, quality_cap_hit, quality_generated_tokens = (
+                        transcribe_audio(
+                            model,
+                            tokenizer,
+                            feature_extractor,
+                            audio,
+                            language,
+                            max_tokens=quality_max_tokens,
+                        )
+                    )
+                    # Prefer the richer transcription unless it is clearly empty/noisy.
+                    if len("".join(quality_text.split())) > len("".join(text.split())):
+                        text = quality_text
+                        cap_hit = quality_cap_hit
+                        generated_tokens = quality_generated_tokens
+                        final_max_tokens = quality_max_tokens
+
             elapsed = time.time() - t0
+            rss_after = rss_megabytes()
             log(
-                f"[transcribe.py] Transcription completed in {elapsed:.2f}s: {text[:80]}..."
+                "[transcribe.py] done "
+                f"duration={duration:.1f}s "
+                f"max_tokens={final_max_tokens} "
+                f"retry={str(retry_used).lower()} "
+                f"quality_retry={str(quality_retry_used).lower()} "
+                f"cap_hit={str(cap_hit).lower()} "
+                f"generated={generated_tokens} "
+                f"rss_mb(before={rss_before:.1f}, after={rss_after:.1f}) "
+                f"latency={elapsed:.2f}s"
             )
 
             print(json.dumps({"text": text}), flush=True)

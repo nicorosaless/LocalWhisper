@@ -139,6 +139,8 @@ Four paste strategies are attempted in order (or a specific one can be forced in
 
 - Xcode 15 or later
 - Swift 5.9 or later
+- Python 3.11 recommended (Qwen backend)
+- Rust + Cargo (optional, for `qwen-daemon` backend)
 - Node.js 18 or later (for the web landing page only)
 
 ### Build
@@ -147,7 +149,38 @@ Four paste strategies are attempted in order (or a specific one can be forced in
 ./scripts/build-app.sh
 ```
 
-This compiles the Swift package, bundles the binary into `build/LocalWhisper.app`, and re-signs the bundle. After each build the Accessibility permission entry must be re-granted because the bundle identity changes.
+This compiles the Swift package, bundles the binary into `build/LocalWhisper.app`, and re-signs the bundle. If Cargo is available, it also builds and bundles `qwen-daemon` into `LocalWhisper.app/Contents/bin/qwen-daemon`.
+
+Runtime backend selection:
+
+```bash
+# Force Rust daemon (if bundled/compiled)
+LOCALWHISPER_QWEN_BACKEND=rust open build/LocalWhisper.app
+
+# Force Python backend
+LOCALWHISPER_QWEN_BACKEND=python open build/LocalWhisper.app
+```
+
+Optional Python path override:
+
+```bash
+LOCALWHISPER_PYTHON_PATH=/opt/homebrew/bin/python3.11 open build/LocalWhisper.app
+```
+
+Low-RAM runtime mode (recommended for minimum idle memory):
+
+```bash
+LOCALWHISPER_QWEN_BACKEND=rust \
+LOCALWHISPER_IDLE_UNLOAD_SECONDS=25 \
+open build/LocalWhisper.app
+```
+
+Notes:
+- Low-RAM is enabled by default; backend unloads after inactivity (cold start on next request).
+- First transcription after idle unload will have a cold start.
+- For best speed, disable it explicitly: `LOCALWHISPER_LOW_RAM=0`.
+
+After each build the Accessibility permission entry may need to be re-granted because the bundle identity/signature changes.
 
 ### Project structure
 
@@ -198,3 +231,9 @@ Runtime configuration is persisted to `~/Library/Application Support/LocalWhispe
 ## License
 
 MIT License
+
+---
+
+## Docs
+
+- `docs/PROJECT_CONTEXT_AND_RAM_OPTIMIZATION.md` - Contexto tecnico del proyecto y plan para minimizar uso de RAM manteniendo Qwen3 0.6B.

@@ -349,10 +349,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         logDebug("🎧 CONFIG AFTER SAVE: hotkey=\(config.hotkey.displayString), mode=\(config.hotkeyMode), lang=\(config.language), engine=\(config.engineType.displayName)")
         
-        // Initialize transcription engine
-        Task { [weak self] in
-            await self?.loadEngine()
-        }
+        // Engine load is lazy on first transcription to reduce idle RAM footprint.
         
         // Hide Dock icon for normal operation (menu bar mode)
         NSApp.setActivationPolicy(.accessory)
@@ -1111,21 +1108,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logDebug("⚙️ Language: \(config.language)")
         logDebug("🧠 Engine: \(config.engineType.displayName)")
         
-        if let engine = activeEngine, engine.status.isLoaded {
-            Task {
-                do {
-                    let text = try await engine.transcribe(audioURL: audioURL, language: config.language)
-                    await handleTranscriptionResult(text)
-                } catch {
-                    logDebug("❌ Engine transcription failed: \(error)")
-                    // Fallback to legacy whisper-cli
-                    await transcribeWithWhisperCli(audioURL: audioURL)
+        Task {
+            do {
+                if activeEngine == nil || activeEngine?.status.isLoaded != true {
+                    await MainActor.run {
+                        self.updateStatusMenuItem("Loading engine...")
+                    }
+                    await loadEngine()
                 }
-            }
-        } else {
-            logDebug("⚠️ Engine not loaded, using legacy whisper-cli")
-            Task {
-                await transcribeWithWhisperCli(audioURL: audioURL)
+
+                guard let engine = activeEngine, engine.status.isLoaded else {
+                    throw TranscriptionError.modelNotLoaded
+                }
+
+                let text = try await engine.transcribe(audioURL: audioURL, language: config.language)
+                await handleTranscriptionResult(text)
+            } catch {
+                logDebug("❌ Engine transcription failed: \(error)")
+                await MainActor.run {
+                    self.updateStatusMenuItem("Error: \(error.localizedDescription)")
+                    self.floatingIndicator.setState(.idle)
+                }
             }
         }
     }

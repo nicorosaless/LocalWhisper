@@ -13,6 +13,17 @@ cd "${SWIFT_DIR}"
 echo "📦 Compiling release build..."
 swift build -c release
 
+# Build optional Rust daemon backend (if cargo is available)
+RUST_DAEMON_SOURCE="${PROJECT_DIR}/rust/qwen-daemon/target/release/qwen-daemon"
+if command -v cargo >/dev/null 2>&1; then
+    if [ -f "${PROJECT_DIR}/rust/qwen-daemon/Cargo.toml" ]; then
+        echo "🦀 Building Rust qwen-daemon..."
+        cargo build --release --manifest-path "${PROJECT_DIR}/rust/qwen-daemon/Cargo.toml"
+    fi
+else
+    echo "⚠️  cargo not found; skipping Rust daemon build (Python backend will be used)."
+fi
+
 # Create app bundle structure
 APP_NAME="LocalWhisper"
 APP_DIR="${PROJECT_DIR}/build/${APP_NAME}.app"
@@ -20,20 +31,29 @@ CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
+BIN_DIR="${RESOURCES_DIR}/bin"
 
 # Clean and create directories
 rm -rf "${APP_DIR}"
 mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 mkdir -p "${FRAMEWORKS_DIR}"
+mkdir -p "${BIN_DIR}"
 
 # Copy executable
 cp ".build/release/LocalWhisper" "${MACOS_DIR}/LocalWhisper"
 
 # Copy whisper-cli binary if exists
 if [ -f "${PROJECT_DIR}/bin/whisper-cli" ]; then
-    mkdir -p "${CONTENTS_DIR}/bin"
-    cp "${PROJECT_DIR}/bin/whisper-cli" "${CONTENTS_DIR}/bin/"
+    cp "${PROJECT_DIR}/bin/whisper-cli" "${BIN_DIR}/"
+    chmod +x "${BIN_DIR}/whisper-cli"
+fi
+
+# Copy Rust daemon if available
+if [ -f "${RUST_DAEMON_SOURCE}" ]; then
+    cp "${RUST_DAEMON_SOURCE}" "${BIN_DIR}/qwen-daemon"
+    chmod +x "${BIN_DIR}/qwen-daemon"
+    echo "🦀 Bundled Rust daemon: ${BIN_DIR}/qwen-daemon"
 fi
 
 # Copy models directory if exists
@@ -117,6 +137,14 @@ codesign --force --deep --sign - "${APP_DIR}"
 codesign --force --deep --sign - --entitlements "${ENTITLEMENTS_FILE}" "${APP_DIR}"
 
 echo "✅ Build complete: ${APP_DIR}"
+echo ""
+echo "🧠 RAM optimization runtime flags:"
+echo "   LOCALWHISPER_QWEN_BACKEND=rust     # force Rust daemon wrapper"
+echo "   LOCALWHISPER_LOW_RAM=0             # disable low-RAM idle unload"
+echo "   LOCALWHISPER_IDLE_UNLOAD_SECONDS=25"
+echo ""
+echo "   Example:"
+echo "   LOCALWHISPER_QWEN_BACKEND=rust open \"${APP_DIR}\""
 echo ""
 echo "📋 IMPORTANT: To fix Accessibility permissions:"
 echo "   1. Open System Settings > Privacy & Security > Accessibility"
